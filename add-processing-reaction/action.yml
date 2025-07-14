@@ -1,0 +1,36 @@
+name: 'Add Processing Reaction'
+description: 'GitHubイベントに応じて処理中のリアクションを追加'
+inputs:
+  github-token:
+    description: 'GitHub Token'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Add processing reaction
+      shell: bash
+      run: |
+        # AI: 各イベントタイプに応じてnode_idを設定
+        if [ "${{ github.event_name }}" = "issue_comment" ]; then
+          NODE_ID="${{ github.event.comment.node_id }}"
+        elif [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
+          NODE_ID="${{ github.event.comment.node_id }}"
+        elif [ "${{ github.event_name }}" = "issues" ]; then
+          NODE_ID="${{ github.event.issue.node_id }}"
+        elif [ "${{ github.event_name }}" = "pull_request_review" ]; then
+          NODE_ID="${{ github.event.review.node_id }}"
+        fi
+
+        # AI: GraphQLのaddReactionミューテーションで統一的にリアクション追加
+        gh api graphql --silent --raw-field query="
+          mutation AddReaction {
+            addReaction(input:{
+              subjectId:\"$NODE_ID\",
+              content:EYES
+            }){
+              reaction{content}
+              subject{id}
+            }
+          }" || echo "リアクション追加に失敗しましたが処理を継続します"
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
