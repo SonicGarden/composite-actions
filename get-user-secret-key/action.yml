@@ -1,0 +1,84 @@
+name: 'Get User Secret Key'
+description: 'ユーザー名を取得し、指定されたキーリストから前方一致でSecretキーを検索する'
+inputs:
+  username:
+    description: 'ユーザー名（指定しない場合はイベントから自動取得）'
+    required: false
+  available_keys:
+    description: 'カンマ区切りの有効なSecretキーリスト'
+    required: true
+outputs:
+  exists:
+    description: 'キーが存在するかどうか (true/false)'
+    value: ${{ steps.key-check.outputs.exists }}
+  secret_key:
+    description: '見つかったSecretキー'
+    value: ${{ steps.key-check.outputs.secret_key }}
+  username:
+    description: '使用されたユーザー名'
+    value: ${{ steps.key-check.outputs.username }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Get user secret key
+      id: key-check
+      shell: bash
+      run: |
+        # ユーザー名を取得（inputsで指定されている場合は優先）
+        if [ -n "${{ inputs.username }}" ]; then
+          USERNAME="${{ inputs.username }}"
+        else
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            USERNAME="${{ github.event.comment.user.login }}"
+          elif [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
+            USERNAME="${{ github.event.comment.user.login }}"
+          elif [ "${{ github.event_name }}" = "pull_request_review" ]; then
+            USERNAME="${{ github.event.review.user.login }}"
+          elif [ "${{ github.event_name }}" = "issues" ]; then
+            USERNAME="${{ github.event.issue.user.login }}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            USERNAME="${{ github.event.pull_request.user.login }}"
+          else
+            echo "Unsupported event type: ${{ github.event_name }}"
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+        fi
+        
+        # ユーザー名を大文字に変換
+        UPPER_USERNAME="${USERNAME^^}"
+        echo "username=$USERNAME" >> $GITHUB_OUTPUT
+        echo "Processing user: $USERNAME -> $UPPER_USERNAME"
+        
+        # 有効なキーリストを取得
+        AVAILABLE_KEYS="${{ inputs.available_keys }}"
+        
+        if [ -z "$AVAILABLE_KEYS" ]; then
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "No available keys configured"
+          exit 0
+        fi
+        
+        # カンマ区切りの文字列を配列に変換して前方一致チェック
+        IFS=',' read -ra KEY_ARRAY <<< "$AVAILABLE_KEYS"
+        MATCHED_KEY=""
+        
+        for key in "${KEY_ARRAY[@]}"; do
+          # 空白を削除
+          key=$(echo "$key" | xargs)
+          # 前方一致チェック（UPPER_USERNAME_で始まるキー）
+          if [[ "$key" == "${UPPER_USERNAME}_"* ]]; then
+            MATCHED_KEY="$key"
+            echo "Found matching key: $MATCHED_KEY"
+            break
+          fi
+        done
+        
+        if [ -n "$MATCHED_KEY" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "secret_key=$MATCHED_KEY" >> $GITHUB_OUTPUT
+          echo "Secret key found: $MATCHED_KEY"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "No matching key found for user: $UPPER_USERNAME"
+        fi

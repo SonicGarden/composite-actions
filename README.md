@@ -96,9 +96,9 @@ GitHubイベントタイプに応じてテキストを抽出するアクショ�
 
 - `text`: 抽出されたイベントテキスト（JSONエスケープ済み）
 
-### generate-claude-token-key
+### get-user-secret-key
 
-ユーザー名からClaude tokenのシークレットキー名を生成するアクションです。GitHub Actionsでユーザー固有のClaude tokenを参照する際に使用します。
+ユーザー名を取得し、指定されたキーリストから前方一致でSecretキーを検索するアクションです。GitHub Actionsでユーザー固有のSecretキーを動的に取得する際に使用します。
 
 #### 対応イベント
 
@@ -111,25 +111,31 @@ GitHubイベントタイプに応じてテキストを抽出するアクショ�
 #### 使用方法
 
 ```yaml
-- name: Generate Claude token key
-  id: generate-token-key
-  uses: SonicGarden/composite-actions/generate-claude-token-key@main
+- name: Get user secret key
+  id: get-secret-key
+  uses: SonicGarden/composite-actions/get-user-secret-key@main
   with:
     username: ${{ github.actor }}
+    available_keys: "JOHN_CLAUDE_CODE_OAUTH_TOKEN,JANE_CLAUDE_CODE_OAUTH_TOKEN,ADMIN_CLAUDE_CODE_OAUTH_TOKEN"
 ```
 
 または、usernameを省略してイベントから自動取得：
 
 ```yaml
-- name: Generate Claude token key
-  id: generate-token-key
-  uses: SonicGarden/composite-actions/generate-claude-token-key@main
+- name: Get user secret key
+  id: get-secret-key
+  uses: SonicGarden/composite-actions/get-user-secret-key@main
+  with:
+    available_keys: "JOHN_CLAUDE_CODE_OAUTH_TOKEN,JANE_CLAUDE_CODE_OAUTH_TOKEN,ADMIN_CLAUDE_CODE_OAUTH_TOKEN"
 ```
 
 #### 入力パラメータ
 
 - `username` (省略可): 対象のユーザー名（省略時はイベントから自動取得）
+- `available_keys` (必須): カンマ区切りの有効なSecretキーリスト
 
 #### 出力パラメータ
 
-- `token_key`: Claude tokenのシークレットキー名（例: `JOHN_CLAUDE_CODE_OAUTH_TOKEN`）
+- `exists`: キーが存在するかどうか（true/false）
+- `secret_key`: 見つかったSecretキー
+- `username`: 使用されたユーザー名
