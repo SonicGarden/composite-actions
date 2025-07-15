@@ -2,6 +2,13 @@
 
 GitHub Actionsで使用するComposite Actionsのコレクション
 
+## Available Actions
+
+- [add-processing-reaction](#add-processing-reaction) - GitHubイベントに処理中のリアクションを追加
+- [check-claude-setup-needed](#check-claude-setup-needed) - Claude Codeを使用してセットアップが必要かどうかを判定
+- [extract-event-text](#extract-event-text) - GitHubイベントタイプに応じてテキストを抽出
+- [get-user-secret-key](#get-user-secret-key) - ユーザー名を取得し、Secretキーを動的に検索
+
 ## Actions
 
 ### add-processing-reaction
