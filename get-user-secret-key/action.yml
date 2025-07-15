@@ -28,41 +28,27 @@ runs:
         if [ -n "${{ inputs.username }}" ]; then
           USERNAME="${{ inputs.username }}"
         else
-          if [ "${{ github.event_name }}" = "issue_comment" ]; then
-            USERNAME="${{ github.event.comment.user.login }}"
-          elif [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
-            USERNAME="${{ github.event.comment.user.login }}"
-          elif [ "${{ github.event_name }}" = "pull_request_review" ]; then
-            USERNAME="${{ github.event.review.user.login }}"
-          elif [ "${{ github.event_name }}" = "issues" ]; then
-            USERNAME="${{ github.event.issue.user.login }}"
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            USERNAME="${{ github.event.pull_request.user.login }}"
-          else
-            echo "Unsupported event type: ${{ github.event_name }}"
-            echo "exists=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
+          USERNAME="${{ github.actor }}"
         fi
-        
+
         # ユーザー名を大文字に変換
         UPPER_USERNAME="${USERNAME^^}"
         echo "username=$USERNAME" >> $GITHUB_OUTPUT
         echo "Processing user: $USERNAME -> $UPPER_USERNAME"
-        
+
         # 有効なキーリストを取得
         AVAILABLE_KEYS="${{ inputs.available_keys }}"
-        
+
         if [ -z "$AVAILABLE_KEYS" ]; then
           echo "exists=false" >> $GITHUB_OUTPUT
           echo "No available keys configured"
           exit 0
         fi
-        
+
         # カンマ区切りの文字列を配列に変換して前方一致チェック
         IFS=',' read -ra KEY_ARRAY <<< "$AVAILABLE_KEYS"
         MATCHED_KEY=""
-        
+
         for key in "${KEY_ARRAY[@]}"; do
           # 空白を削除
           key=$(echo "$key" | xargs)
@@ -73,7 +59,7 @@ runs:
             break
           fi
         done
-        
+
         if [ -n "$MATCHED_KEY" ]; then
           echo "exists=true" >> $GITHUB_OUTPUT
           echo "secret_key=$MATCHED_KEY" >> $GITHUB_OUTPUT

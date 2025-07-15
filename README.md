@@ -100,14 +100,6 @@ GitHubイベントタイプに応じてテキストを抽出するアクショ�
 
 ユーザー名を取得し、指定されたキーリストから前方一致でSecretキーを検索するアクションです。GitHub Actionsでユーザー固有のSecretキーを動的に取得する際に使用します。
 
-#### 対応イベント
-
-- `issue_comment` - イシューコメント（comment.user.login）
-- `pull_request_review_comment` - プルリクエストレビューコメント（comment.user.login）
-- `pull_request_review` - プルリクエストレビュー（review.user.login）
-- `issues` - イシュー（issue.user.login）
-- `pull_request` - プルリクエスト（pull_request.user.login）
-
 #### 使用方法
 
 ```yaml
@@ -119,7 +111,7 @@ GitHubイベントタイプに応じてテキストを抽出するアクショ�
     available_keys: "JOHN_CLAUDE_CODE_OAUTH_TOKEN,JANE_CLAUDE_CODE_OAUTH_TOKEN,ADMIN_CLAUDE_CODE_OAUTH_TOKEN"
 ```
 
-または、usernameを省略してイベントから自動取得：
+または、usernameを省略してgithub.actorから自動取得：
 
 ```yaml
 - name: Get user secret key
@@ -131,7 +123,7 @@ GitHubイベントタイプに応じてテキストを抽出するアクショ�
 
 #### 入力パラメータ
 
-- `username` (省略可): 対象のユーザー名（省略時はイベントから自動取得）
+- `username` (省略可): 対象のユーザー名（省略時はgithub.actorから自動取得）
 - `available_keys` (必須): カンマ区切りの有効なSecretキーリスト
 
 #### 出力パラメータ
