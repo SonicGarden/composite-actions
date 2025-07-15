@@ -6,8 +6,9 @@ inputs:
     description: 'Claude Code OAuth トークン'
     required: true
   event_text:
-    description: '分析対象のイベントテキスト'
-    required: true
+    description: '分析対象のイベントテキスト（未入力の場合は自動抽出）'
+    required: false
+    default: ''
 
 outputs:
   needs_setup:
@@ -17,6 +18,11 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    - name: Extract event text if not provided
+      id: extract-event-text
+      if: ${{ inputs.event_text == '' }}
+      uses: ./extract-event-text
+      
     - name: Check if setup is needed
       id: setup-check
       uses: anthropics/claude-code-base-action@beta
@@ -26,7 +32,7 @@ runs:
           以下のユーザーからの依頼内容を分析して、コード修正、テストの実行、データベース操作、ビルドなどを含む可能性があるかどうかを判定してください。
 
           依頼内容:
-          ${{ inputs.event_text }}
+          ${{ inputs.event_text || steps.extract-event-text.outputs.text }}
 
           この依頼が以下のいずれかを含む可能性がある場合は「SETUP_NEEDED」、そうでない場合は「SETUP_NOT_NEEDED」を出力してください:
           - コードの修正・追加
