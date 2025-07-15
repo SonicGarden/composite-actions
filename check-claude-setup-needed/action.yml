@@ -1,0 +1,61 @@
+name: 'Check Claude Setup Needed'
+description: 'Claude Codeを使用してセットアップが必要かどうかを判定'
+
+inputs:
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth トークン'
+    required: true
+  event_text:
+    description: '分析対象のイベントテキスト'
+    required: true
+
+outputs:
+  needs_setup:
+    description: 'セットアップが必要かどうか（true/false）'
+    value: ${{ steps.parse-setup-result.outputs.needs_setup }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check if setup is needed
+      id: setup-check
+      uses: anthropics/claude-code-base-action@beta
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        prompt: |
+          以下のユーザーからの依頼内容を分析して、コード修正、テストの実行、データベース操作、ビルドなどを含む可能性があるかどうかを判定してください。
+
+          依頼内容:
+          ${{ inputs.event_text }}
+
+          この依頼が以下のいずれかを含む可能性がある場合は「SETUP_NEEDED」、そうでない場合は「SETUP_NOT_NEEDED」を出力してください:
+          - コードの修正・追加
+          - テストの実行
+          - データベース操作
+          - ビルドの実行
+          - 依存関係のインストール
+
+          回答は「SETUP_NEEDED」または「SETUP_NOT_NEEDED」のみで答えてください。
+        max_turns: 1
+        timeout_minutes: 2
+
+    - name: Parse setup check result
+      id: parse-setup-result
+      shell: bash
+      run: |
+        # AI: Claude Code の実行結果から判定結果を抽出
+        EXECUTION_FILE="${{ steps.setup-check.outputs.execution_file }}"
+        if [ -f "$EXECUTION_FILE" ]; then
+          # AI: JSONから最後のresultオブジェクトを抽出してSETUP_NEEDEDが含まれているかチェック
+          RESULT=$(cat "$EXECUTION_FILE" | jq -r '.[] | select(.type == "result") | .result' | tail -1)
+          if echo "$RESULT" | grep -q "SETUP_NEEDED"; then
+            echo "needs_setup=true" >> $GITHUB_OUTPUT
+            echo "Setup is needed based on Claude's analysis"
+          else
+            echo "needs_setup=false" >> $GITHUB_OUTPUT
+            echo "Setup is not needed based on Claude's analysis"
+          fi
+        else
+          echo "needs_setup=false" >> $GITHUB_OUTPUT
+          echo "Could not parse result, defaulting to no setup"
+        fi

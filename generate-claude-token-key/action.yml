@@ -1,0 +1,40 @@
+name: 'Generate Claude Token Key'
+description: 'ユーザー名からClaude tokenのシークレットキー名を生成'
+inputs:
+  username:
+    description: '対象のユーザー名'
+    required: false
+outputs:
+  token_key:
+    description: 'Claude tokenのシークレットキー名'
+    value: ${{ steps.generate.outputs.token_key }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Generate Claude token key
+      id: generate
+      shell: bash
+      run: |
+        # AI: ユーザー名を大文字に変換してtokenキーを生成
+        USERNAME="${{ inputs.username }}"
+
+        # AI: inputs.usernameがない場合は、イベントタイプに応じてユーザ名を抽出
+        if [ -z "$USERNAME" ]; then
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            USERNAME="${{ github.event.comment.user.login }}"
+          elif [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
+            USERNAME="${{ github.event.comment.user.login }}"
+          elif [ "${{ github.event_name }}" = "pull_request_review" ]; then
+            USERNAME="${{ github.event.review.user.login }}"
+          elif [ "${{ github.event_name }}" = "issues" ]; then
+            USERNAME="${{ github.event.issue.user.login }}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            USERNAME="${{ github.event.pull_request.user.login }}"
+          fi
+        fi
+
+        UPPER_USERNAME="${USERNAME^^}"
+        TOKEN_KEY="${UPPER_USERNAME}_CLAUDE_CODE_OAUTH_TOKEN"
+
+        echo "token_key=${TOKEN_KEY}" >> $GITHUB_OUTPUT
+        echo "Generated token key: ${TOKEN_KEY} for user ${USERNAME}"

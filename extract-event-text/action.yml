@@ -1,0 +1,34 @@
+name: 'Extract Event Text'
+description: 'GitHubイベントタイプに応じてテキストを抽出'
+outputs:
+  text:
+    description: '抽出されたイベントテキスト'
+    value: ${{ steps.extract.outputs.text }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Extract event-specific text
+      id: extract
+      shell: bash
+      run: |
+        # AI: 各イベントタイプに応じてテキストを取得（toJSONでエスケープ）
+        if [ "${{ github.event_name }}" = "issue_comment" ]; then
+          EVENT_TEXT='${{ toJSON(github.event.comment.body) }}'
+        elif [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
+          EVENT_TEXT='${{ toJSON(github.event.comment.body) }}'
+        elif [ "${{ github.event_name }}" = "pull_request_review" ]; then
+          EVENT_TEXT='${{ toJSON(github.event.review.body) }}'
+        elif [ "${{ github.event_name }}" = "issues" ]; then
+          # AI: issueの場合はbodyとtitleの両方をチェック
+          if [ "${{ github.event.issue.body }}" != "" ]; then
+            EVENT_TEXT='${{ toJSON(github.event.issue.body) }}'
+          else
+            EVENT_TEXT='${{ toJSON(github.event.issue.title) }}'
+          fi
+        fi
+        # AI: JSONエスケープされた文字列をそのまま出力（改行やクォートも安全に処理される）
+        {
+          echo 'text<<EOF'
+          echo "$EVENT_TEXT"
+          echo 'EOF'
+        } >> $GITHUB_OUTPUT
