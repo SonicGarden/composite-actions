@@ -4,7 +4,10 @@ description: 'Claude Codeを使用してセットアップが必要かどうか�
 inputs:
   claude_code_oauth_token:
     description: 'Claude Code OAuth トークン'
-    required: true
+    required: false
+  anthropic_api_key:
+    required: false
+    description: Anthropic API key for code review
   event_text:
     description: '分析対象のイベントテキスト（未入力の場合は自動抽出）'
     required: false
@@ -22,12 +25,13 @@ runs:
       id: extract-event-text
       if: ${{ inputs.event_text == '' }}
       uses: ./extract-event-text
-      
+
     - name: Check if setup is needed
       id: setup-check
       uses: anthropics/claude-code-base-action@beta
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        anthropic_api_key: ${{ inputs.claude_code_oauth_token != '' && '' || inputs.anthropic_api_key }}
         prompt: |
           以下のユーザーからの依頼内容を分析して、開発環境のセットアップが必要かどうかを判定してください。
 
