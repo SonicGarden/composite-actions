@@ -7,7 +7,7 @@ inputs:
     required: false
   anthropic_api_key:
     required: false
-    description: Anthropic API key for code review
+    description: Anthropic API key
   event_text:
     description: '分析対象のイベントテキスト（未入力の場合は自動抽出）'
     required: false
