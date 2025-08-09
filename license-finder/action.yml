@@ -1,0 +1,82 @@
+name: 'License Finder Check'
+description: 'Check for unapproved licenses and generate report'
+inputs:
+  additional-licenses:
+    description: 'Additional licenses to permit (comma-separated)'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install license_finder
+      shell: bash
+      run: gem install license_finder
+
+    - name: Configure permitted licenses
+      shell: bash
+      run: |
+        # 受託開発で安全に利用可能なライセンスのみを許可
+        # Permissive licenses (制限が緩い、商用利用可能)
+        license_finder permitted_licenses add MIT
+        license_finder permitted_licenses add Apache-2.0
+        license_finder permitted_licenses add BSD-3-Clause
+        license_finder permitted_licenses add BSD-2-Clause
+        license_finder permitted_licenses add ISC
+        license_finder permitted_licenses add 0BSD
+        license_finder permitted_licenses add Unlicense
+        license_finder permitted_licenses add CC0-1.0
+        license_finder permitted_licenses add WTFPL
+        license_finder permitted_licenses add Zlib
+        license_finder permitted_licenses add PostgreSQL
+
+        # Ruby specific
+        license_finder permitted_licenses add Ruby
+        license_finder permitted_licenses add Simplified-BSD
+
+        # Python specific
+        license_finder permitted_licenses add Python-2.0
+        license_finder permitted_licenses add PSF
+
+        # Other commonly accepted
+        license_finder permitted_licenses add CC-BY-4.0
+        license_finder permitted_licenses add OFL-1.1  # フォント用
+
+        # Additional safe licenses
+        license_finder permitted_licenses add BSD
+        license_finder permitted_licenses add MIT-0
+        license_finder permitted_licenses add BlueOak-1.0.0
+        license_finder permitted_licenses add CC-BY-3.0
+
+        # Conditionally acceptable licenses
+        license_finder permitted_licenses add MPL-2.0  # Mozilla Public License - ファイル単位のコピーレフト
+        license_finder permitted_licenses add "Brakeman Public Use License"  # Brakemanセキュリティツール用
+
+        # Add additional licenses if specified
+        if [ -n "${{ inputs.additional-licenses }}" ]; then
+          IFS=',' read -ra LICENSES <<< "${{ inputs.additional-licenses }}"
+          for license in "${LICENSES[@]}"; do
+            license=$(echo "$license" | xargs)  # Trim whitespace
+            if [ -n "$license" ]; then
+              echo "Adding additional license: $license"
+              license_finder permitted_licenses add "$license"
+            fi
+          done
+        fi
+
+    - name: Check for unapproved licenses
+      shell: bash
+      run: |
+        echo "Checking for unapproved licenses..."
+        license_finder
+
+    - name: Generate license report
+      if: always()
+      shell: bash
+      run: |
+        # GitHub Actions Summaryにmarkdown形式で出力
+        echo "# 📋 License Finder Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Generated at: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        license_finder report --format markdown >> $GITHUB_STEP_SUMMARY
