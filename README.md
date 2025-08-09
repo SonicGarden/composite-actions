@@ -8,6 +8,7 @@ GitHub Actionsで使用するComposite Actionsのコレクション
 - [check-claude-setup-needed](#check-claude-setup-needed) - Claude Codeを使用してセットアップが必要かどうかを判定
 - [extract-event-text](#extract-event-text) - GitHubイベントタイプに応じてテキストを抽出
 - [get-user-secret-key](#get-user-secret-key) - ユーザー名を取得し、Secretキーを動的に検索
+- [license-finder](#license-finder) - ライセンスチェックと承認済みライセンスの管理
 
 ## Actions
 
@@ -138,3 +139,35 @@ GitHubイベントタイプに応じてテキストを抽出するアクショ�
 - `exists`: キーが存在するかどうか（true/false）
 - `secret_key`: 見つかったSecretキー
 - `username`: 使用されたユーザー名
+
+### license-finder
+
+プロジェクトの依存関係のライセンスをチェックし、承認されていないライセンスを検出するアクションです。商用利用可能な安全なライセンスがデフォルトで設定されており、レポートをGitHub Actions Summaryに出力します。
+
+#### 使用方法
+
+```yaml
+# 基本的な使用方法
+- name: Check licenses
+  uses: SonicGarden/composite-actions/license-finder@main
+
+# 追加のライセンスを許可する場合
+- name: Check licenses with additional permitted licenses
+  uses: SonicGarden/composite-actions/license-finder@main
+  with:
+    additional-licenses: "Custom-License-1.0,Internal-License"
+```
+
+#### 入力パラメータ
+
+- `additional-licenses` (省略可): 追加で許可するライセンス（カンマ区切り）
+
+#### デフォルトで許可されているライセンス
+
+商用利用可能な主要なオープンソースライセンス（MIT、Apache-2.0、BSDファミリーなど）がデフォルトで許可されています。Ruby、Pythonなどの言語固有のライセンスや、フォント用ライセンス（OFL-1.1）も含まれています。
+
+#### 機能
+
+- 未承認ライセンスの検出
+- GitHub Actions Summaryへのマークダウン形式でのレポート出力
+- 追加ライセンスの動的な許可設定
