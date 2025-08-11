@@ -31,8 +31,9 @@ runs:
           USERNAME="${{ github.actor }}"
         fi
 
-        # ユーザー名を大文字に変換
-        UPPER_USERNAME="${USERNAME^^}"
+        # ユーザー名を大文字に変換し、ハイフンをアンダースコアに置換
+        # GitHub Secretsではハイフンが使えないため変換が必要
+        UPPER_USERNAME=$(echo "${USERNAME^^}" | tr '-' '_')
         echo "username=$USERNAME" >> $GITHUB_OUTPUT
         echo "Processing user: $USERNAME -> $UPPER_USERNAME"
 
