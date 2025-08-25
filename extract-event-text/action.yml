@@ -20,8 +20,10 @@ runs:
           EVENT_TEXT='${{ toJSON(github.event.review.body) }}'
         elif [ "${{ github.event_name }}" = "issues" ]; then
           # AI: issueの場合はbodyとtitleの両方をチェック
-          if [ "${{ github.event.issue.body }}" != "" ]; then
-            EVENT_TEXT='${{ toJSON(github.event.issue.body) }}'
+          # toJSONを使って安全に空チェック（nullや特殊文字をエスケープ）
+          ISSUE_BODY='${{ toJSON(github.event.issue.body) }}'
+          if [ "$ISSUE_BODY" != '""' ] && [ "$ISSUE_BODY" != 'null' ]; then
+            EVENT_TEXT="$ISSUE_BODY"
           else
             EVENT_TEXT='${{ toJSON(github.event.issue.title) }}'
           fi
