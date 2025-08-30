@@ -10,27 +10,30 @@ runs:
     - name: Extract event-specific text
       id: extract
       shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        COMMENT_BODY: ${{ github.event.comment.body }}
+        REVIEW_BODY: ${{ github.event.review.body }}
+        ISSUE_BODY: ${{ github.event.issue.body }}
+        ISSUE_TITLE: ${{ github.event.issue.title }}
       run: |
-        # AI: 各イベントタイプに応じてテキストを取得（toJSONでエスケープ）
-        if [ "${{ github.event_name }}" = "issue_comment" ]; then
-          EVENT_TEXT='${{ toJSON(github.event.comment.body) }}'
-        elif [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
-          EVENT_TEXT='${{ toJSON(github.event.comment.body) }}'
-        elif [ "${{ github.event_name }}" = "pull_request_review" ]; then
-          EVENT_TEXT='${{ toJSON(github.event.review.body) }}'
-        elif [ "${{ github.event_name }}" = "issues" ]; then
+        # AI: 環境変数経由でテキストを取得（GitHubが自動的にエスケープ処理）
+        if [ "$EVENT_NAME" = "issue_comment" ]; then
+          EVENT_TEXT="$COMMENT_BODY"
+        elif [ "$EVENT_NAME" = "pull_request_review_comment" ]; then
+          EVENT_TEXT="$COMMENT_BODY"
+        elif [ "$EVENT_NAME" = "pull_request_review" ]; then
+          EVENT_TEXT="$REVIEW_BODY"
+        elif [ "$EVENT_NAME" = "issues" ]; then
           # AI: issueの場合はbodyとtitleの両方をチェック
-          # toJSONを使って安全に空チェック（nullや特殊文字をエスケープ）
-          ISSUE_BODY='${{ toJSON(github.event.issue.body) }}'
-          if [ "$ISSUE_BODY" != '""' ] && [ "$ISSUE_BODY" != 'null' ]; then
+          if [ -n "$ISSUE_BODY" ]; then
             EVENT_TEXT="$ISSUE_BODY"
           else
-            EVENT_TEXT='${{ toJSON(github.event.issue.title) }}'
+            EVENT_TEXT="$ISSUE_TITLE"
           fi
         fi
-        # AI: JSONエスケープされた文字列をそのまま出力（改行やクォートも安全に処理される）
-        {
-          echo 'text<<EOF'
-          echo "$EVENT_TEXT"
-          echo 'EOF'
-        } >> $GITHUB_OUTPUT
+
+        # AI: 複数行テキストを正しく出力するためにheredocを使用
+        echo "text<<EOF" >> $GITHUB_OUTPUT
+        echo "$EVENT_TEXT" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
