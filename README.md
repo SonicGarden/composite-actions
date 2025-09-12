@@ -156,11 +156,25 @@ GitHubイベントタイプに応じてテキストを抽出するアクショ�
   uses: SonicGarden/composite-actions/license-finder@main
   with:
     additional-licenses: "Custom-License-1.0,Internal-License"
+
+# 特定の依存関係を無視する場合
+- name: Check licenses with ignored dependencies
+  uses: SonicGarden/composite-actions/license-finder@main
+  with:
+    ignored-dependencies: "problematic-gem,legacy-package"
+
+# 追加ライセンスと無視する依存関係の両方を指定する場合
+- name: Check licenses with custom configuration
+  uses: SonicGarden/composite-actions/license-finder@main
+  with:
+    additional-licenses: "Custom-License-1.0"
+    ignored-dependencies: "internal-tool,dev-only-package"
 ```
 
 #### 入力パラメータ
 
 - `additional-licenses` (省略可): 追加で許可するライセンス（カンマ区切り）
+- `ignored-dependencies` (省略可): ライセンスチェックから除外する依存関係（カンマ区切り）
 
 #### デフォルトで許可されているライセンス
 
@@ -171,3 +185,4 @@ GitHubイベントタイプに応じてテキストを抽出するアクショ�
 - 未承認ライセンスの検出
 - GitHub Actions Summaryへのマークダウン形式でのレポート出力
 - 追加ライセンスの動的な許可設定
+- 特定の依存関係をライセンスチェックから除外
