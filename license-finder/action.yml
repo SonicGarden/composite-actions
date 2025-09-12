@@ -5,6 +5,10 @@ inputs:
     description: 'Additional licenses to permit (comma-separated)'
     required: false
     default: ''
+  ignored-dependencies:
+    description: 'Dependencies to ignore from license checking (comma-separated)'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -60,6 +64,22 @@ runs:
             if [ -n "$license" ]; then
               echo "Adding additional license: $license"
               license_finder permitted_licenses add "$license"
+            fi
+          done
+        fi
+
+    - name: Configure ignored dependencies
+      shell: bash
+      run: |
+        # Ignore specified dependencies if provided
+        if [ -n "${{ inputs.ignored-dependencies }}" ]; then
+          echo "Configuring ignored dependencies..."
+          IFS=',' read -ra DEPENDENCIES <<< "${{ inputs.ignored-dependencies }}"
+          for dependency in "${DEPENDENCIES[@]}"; do
+            dependency=$(echo "$dependency" | xargs)  # Trim whitespace
+            if [ -n "$dependency" ]; then
+              echo "Ignoring dependency: $dependency"
+              license_finder ignored_dependencies add "$dependency"
             fi
           done
         fi
