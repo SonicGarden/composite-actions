@@ -1,0 +1,114 @@
+name: 'Claude Code Action'
+description: 'Run Claude Code with project setup'
+inputs:
+  additional_claude_args:
+    description: 'Arguments for Claude Code (model, allowed tools, mcp configs, etc)'
+    required: false
+    default: ''
+  additional_system_prompt:
+    description: 'Additional system prompt'
+    required: false
+    default: |
+      # 言語設定
+      **重要**: すべての出力は必ず日本語で行ってください。これには以下が含まれます：
+      - GitHubのIssueやPRへのコメント
+      - エラーメッセージと解決方法の説明
+      - テスト実行結果のレポート
+      - 作業内容の説明
+      - コミットメッセージ
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: true
+
+outputs:
+  execution_file:
+    description: 'Claude execution file path'
+    value: ${{ steps.claude.outputs.execution_file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Add processing reaction
+      uses: SonicGarden/composite-actions/add-processing-reaction@main
+      with:
+        github-token: ${{ github.token }}
+
+    - name: Extract event text
+      id: event-text
+      uses: SonicGarden/composite-actions/extract-event-text@main
+
+    - name: Extract base branch
+      id: extract-base
+      shell: bash
+      env:
+        EVENT_TEXT: ${{ steps.event-text.outputs.text }}
+      run: |
+        # --base=パラメータを抽出 (例: --base=branch_name)
+        if [[ "$EVENT_TEXT" =~ --base=([^[:space:]]+) ]]; then
+          BASE_BRANCH="${BASH_REMATCH[1]}"
+          echo "base_branch=$BASE_BRANCH" >> $GITHUB_OUTPUT
+          echo "Base branch extracted: $BASE_BRANCH"
+        else
+          echo "No base branch specified"
+        fi
+
+    - name: Check if setup is needed
+      id: check-setup-needed
+      if: ${{ !contains(steps.event-text.outputs.text, '-setup') }}
+      uses: SonicGarden/composite-actions/check-claude-setup-needed@main
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        event_text: ${{ steps.event-text.outputs.text }}
+
+    # プロジェクト固有のセットアップアクションが存在するかチェック
+    - name: Check for Project Setup Action
+      id: check-project-setup
+      shell: bash
+      run: |
+        if [ -d ".github/actions/project-setup" ] && [ -f ".github/actions/project-setup/action.yml" -o -f ".github/actions/project-setup/action.yaml" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "Project-specific setup action found"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "No project-specific setup action found"
+        fi
+
+    # プロジェクト固有のセットアップを実行
+    - name: Run Project Setup
+      id: project-setup
+      if: |
+        steps.check-project-setup.outputs.exists == 'true' &&
+        (contains(steps.event-text.outputs.text, '-setup') ||
+         steps.check-setup-needed.outputs.needs_setup == 'true')
+      uses: ./.github/actions/project-setup
+
+    - name: Run Claude Code
+      id: claude
+      uses: anthropics/claude-code-action@v1
+      env:
+        SYSTEM_PROMPT: |
+          - REPO: ${{ github.repository }}
+          - ISSUE_NUMBER: ${{ github.event.issue.number }}
+          - PR_NUMBER: ${{ github.event.pull_request.number }}
+
+          ${{ steps.project-setup.outcome == 'success' && '# 🚀 開発環境準備完了
+          - **プロジェクト環境: セットアップ完了** ✅
+          - **すぐにコード実装・テスト実行が可能な状態です**
+          - 依存関係のインストール: 完了
+          - データベース（必要な場合）: 接続設定済み
+          - テスト環境: 実行可能
+          - 追加のセットアップや環境構築は不要です' || '' }}
+
+          ${{ inputs.additional_system_prompt }}
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        base_branch: ${{ steps.extract-base.outputs.base_branch || '' }}
+        additional_permissions: |
+          actions: read
+        claude_args: |
+          ${{ contains(steps.event-text.outputs.text, '-opus') && '--model claude-opus-4-1-20250805' || '' }}
+          --allowedTools "Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git fetch:*),Bash(git checkout:*),Bash(gh:*),WebFetch,WebSearch,mcp__github__get_issue,mcp__github__create_issue,mcp__github__add_sub_issue,mcp__github__list_sub_issues,mcp__github__remove_sub_issue,mcp__github__reprioritize_sub_issue,mcp__github__update_issue,mcp__context7__*,mcp__deepwiki__*"
+          --append-system-prompt "${{ env.SYSTEM_PROMPT }}"
+          --mcp-config '{"mcpServers":{"deepwiki":{"type":"http","url":"https://mcp.deepwiki.com/mcp"},"context7":{"type":"sse","url":"https://mcp.context7.com/sse"}}}'
+          ${{ inputs.additional_claude_args }}
+        settings: ".claude/settings.json"
