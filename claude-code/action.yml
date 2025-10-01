@@ -84,7 +84,7 @@ runs:
 
     - name: Run Claude Code
       id: claude
-      uses: anthropics/claude-code-action@2086c977a558a1b8f4aa65390617b17135d53515
+      uses: anthropics/claude-code-action@v1
       env:
         SYSTEM_PROMPT: |
           - REPO: ${{ github.repository }}
