@@ -18,7 +18,10 @@ inputs:
       - コミットメッセージ
   claude_code_oauth_token:
     description: 'Claude Code OAuth token'
-    required: true
+    required: false
+  anthropic_api_key:
+    description: 'Anthropic API key'
+    required: false
 
 outputs:
   execution_file:
@@ -58,6 +61,7 @@ runs:
       uses: SonicGarden/composite-actions/check-claude-setup-needed@main
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        anthropic_api_key: ${{ inputs.claude_code_oauth_token != '' && '' || inputs.anthropic_api_key }}
         event_text: ${{ steps.event-text.outputs.text }}
 
     # プロジェクト固有のセットアップアクションが存在するかチェック
@@ -102,6 +106,7 @@ runs:
           ${{ inputs.additional_system_prompt }}
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        anthropic_api_key: ${{ inputs.claude_code_oauth_token != '' && '' || inputs.anthropic_api_key }}
         base_branch: ${{ steps.extract-base.outputs.base_branch || '' }}
         additional_permissions: |
           actions: read
