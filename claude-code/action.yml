@@ -111,7 +111,7 @@ runs:
         additional_permissions: |
           actions: read
         claude_args: |
-          ${{ contains(steps.event-text.outputs.text, '-opus') && '--model claude-opus-4-1-20250805' || '' }}
+          ${{ contains(steps.event-text.outputs.text, '-opus') && '--model opus' || '' }}
           --allowedTools "Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git fetch:*),Bash(git checkout:*),Bash(gh:*),WebFetch,WebSearch,mcp__github__get_issue,mcp__github__create_issue,mcp__github__add_sub_issue,mcp__github__list_sub_issues,mcp__github__remove_sub_issue,mcp__github__reprioritize_sub_issue,mcp__github__update_issue,mcp__context7__*,mcp__deepwiki__*"
           --append-system-prompt "${{ env.SYSTEM_PROMPT }}"
           --mcp-config '{"mcpServers":{"deepwiki":{"type":"http","url":"https://mcp.deepwiki.com/mcp"},"context7":{"type":"sse","url":"https://mcp.context7.com/sse"}}}'
