@@ -28,7 +28,7 @@ runs:
 
     - name: Check if setup is needed
       id: setup-check
-      uses: anthropics/claude-code-base-action@beta
+      uses: anthropics/claude-code-action@v1
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
         anthropic_api_key: ${{ inputs.claude_code_oauth_token != '' && '' || inputs.anthropic_api_key }}
@@ -60,8 +60,8 @@ runs:
           - 単純な質問や説明のみの場合は「SETUP_NOT_NEEDED」
 
           回答は「SETUP_NEEDED」または「SETUP_NOT_NEEDED」のみで答えてください。
-        max_turns: 1
-        timeout_minutes: 2
+        claude_args: |
+          --model haiku --max-turns 1
 
     - name: Parse setup check result
       id: parse-setup-result
