@@ -109,6 +109,7 @@ runs:
         anthropic_api_key: ${{ inputs.claude_code_oauth_token != '' && '' || inputs.anthropic_api_key }}
         base_branch: ${{ steps.extract-base.outputs.base_branch || '' }}
         display_report: true
+        show_full_output: ${{ runner.debug == '1' || contains(steps.event-text.outputs.text, '-debug') }}
         additional_permissions: |
           actions: read
         claude_args: |
