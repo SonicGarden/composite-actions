@@ -15,7 +15,7 @@ runs:
   steps:
     - name: Install license_finder
       shell: bash
-      run: gem install license_finder
+      run: gem install license_finder -v 7.2.1
 
     - name: Configure permitted licenses
       shell: bash
