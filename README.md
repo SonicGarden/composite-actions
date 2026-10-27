@@ -229,12 +229,19 @@ GitHubイベントタイプに応じてテキストを抽出するアクショ�
   with:
     additional-licenses: "Custom-License-1.0"
     ignored-dependencies: "internal-tool,dev-only-package"
+
+# license_finder のバージョンを固定する場合
+- name: Check licenses with pinned license_finder
+  uses: SonicGarden/composite-actions/license-finder@main
+  with:
+    version: "7.2.1"
 ```
 
 #### 入力パラメータ
 
 - `additional-licenses` (省略可): 追加で許可するライセンス（カンマ区切り）
 - `ignored-dependencies` (省略可): ライセンスチェックから除外する依存関係（カンマ区切り）
+- `version` (省略可): インストールする license_finder gem のバージョン（例: `7.2.1`）。省略すると、実行時点の最新版をインストールする
 
 #### デフォルトで許可されているライセンス
 

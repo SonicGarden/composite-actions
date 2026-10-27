@@ -9,13 +9,25 @@ inputs:
     description: 'Dependencies to ignore from license checking (comma-separated)'
     required: false
     default: ''
+  version:
+    description: 'license_finder gem version to install (e.g. 7.2.1). Installs the latest version if empty'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
   steps:
     - name: Install license_finder
       shell: bash
-      run: gem install license_finder
+      # inputs を run に直接埋め込むと、値がシェルのコードとして解釈されうるので env で渡す
+      env:
+        LICENSE_FINDER_VERSION: ${{ inputs.version }}
+      run: |
+        if [ -n "$LICENSE_FINDER_VERSION" ]; then
+          gem install license_finder -v "$LICENSE_FINDER_VERSION"
+        else
+          gem install license_finder
+        fi
 
     - name: Configure permitted licenses
       shell: bash
