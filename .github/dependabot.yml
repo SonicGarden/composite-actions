@@ -1,7 +1,10 @@
 version: 2
 updates:
 - package-ecosystem: github-actions
-  directory: "/"
+  directories:
+  - "/"
+  - "/update-ruby-version/check"
+  - "/update-ruby-version/merge"
   schedule:
     interval: weekly
   cooldown:

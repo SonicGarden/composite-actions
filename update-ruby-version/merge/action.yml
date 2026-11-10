@@ -1,0 +1,57 @@
+name: 'Update Ruby Version (merge)'
+description: '.ruby-version を更新する PR を作成し、そのまま squash マージする'
+
+# Dependabot が更新できない .ruby-version を、最新の安定版 Ruby に上げるための composite action（merge 側）。
+# check 側（update-ruby-version/check）でテストまで済んだ version を受け取って PR を作る。
+#
+# 設計意図:
+# - GITHUB_TOKEN で作った PR ではテストワークフローが起動しないので、テストは呼び出し側ワークフローの
+#   test ジョブで実行済みであることを前提に、PR 作成後すぐ squash マージする。
+# - 書き込み権限を持つジョブで使うサードパーティ action なので、peter-evans/create-pull-request は SHA で固定する。
+#
+# NOTE: checkout は action 内で行う。呼び出し側で actions/checkout を前置しない。
+#       runs-on / permissions（contents: write, pull-requests: write）と、
+#       `if: needs.test.outputs.changed == 'true'` の発火条件は呼び出し側 job が持つ。
+#       (update-ruby-version/README.md に呼び出し側の完全な例あり)
+inputs:
+  version:
+    description: '更新先の Ruby バージョン（x.y.z 形式。check action の version output を渡す）'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    # NOTE: untrusted input を run: に直接展開せず env 経由で受ける（GitHub Actions injection 対策）
+    - name: Update .ruby-version
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        # composite の required: true は実行時に強制されないため明示的に検証する
+        if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "version must be in x.y.z format: '${VERSION}'" >&2
+          exit 1
+        fi
+        echo "$VERSION" > .ruby-version
+
+    # NOTE: 書き込み権限を持つジョブで使うサードパーティ action なので SHA で固定する
+    - name: Create pull request
+      id: cpr
+      uses: peter-evans/create-pull-request@15733dbdfeedb4f7fdb73d13c6f5ac83b710fab8 # v8.1.2
+      with:
+        branch: update-ruby-version
+        title: "chore: .ruby-version を ${{ inputs.version }} に更新"
+        commit-message: "chore: .ruby-version を ${{ inputs.version }} に更新"
+        body: "最新の安定版 Ruby に更新します。テストはこのワークフローの test ジョブで実行済みです。"
+        add-paths: .ruby-version
+
+    - name: Merge pull request
+      if: steps.cpr.outputs.pull-request-number
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
+      run: gh pr merge --squash --delete-branch "$PR_NUMBER"

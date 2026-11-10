@@ -1,0 +1,51 @@
+name: 'Update Ruby Version (check)'
+description: '最新の安定版 Ruby を取得して .ruby-version を書き換え、差分の有無を出力する'
+
+# Dependabot が更新できない .ruby-version を、最新の安定版 Ruby に上げるための composite action（check 側）。
+# merge 側（update-ruby-version/merge）と組み合わせて使う。
+#
+# 設計意図:
+# - Dependabot は .ruby-version を更新できないため、最新の安定版 Ruby への更新をワークフロー側で行う。
+# - GITHUB_TOKEN で作った PR ではテストワークフローが起動しないので、テストは同じワークフロー内で実行してからマージする。
+#   そのため check（書き込み権限なし）→ 呼び出し側のテスト → merge（書き込み権限あり）の 3 段に分ける。
+# - 本 action は gem の実行を伴うジョブで使う想定のため、書き込み権限を持たない（contents: read）。
+#
+# NOTE: checkout は action 内で行う（persist-credentials: false）。呼び出し側で actions/checkout を前置しない。
+#       runs-on / permissions / テスト手順は呼び出し側 job が持つ。
+#       (update-ruby-version/README.md に呼び出し側の完全な例あり)
+outputs:
+  version:
+    description: '取得した最新の安定版 Ruby のバージョン（x.y.z 形式）'
+    value: ${{ steps.latest.outputs.version }}
+  changed:
+    description: '.ruby-version に差分があるか（true/false）'
+    value: ${{ steps.diff.outputs.changed }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+
+    # NOTE: preview / rc を除外するため x.y.z 形式のみに絞る
+    - name: Fetch latest stable Ruby version
+      id: latest
+      shell: bash
+      run: |
+        latest=$(curl -sfL https://raw.githubusercontent.com/ruby/www.ruby-lang.org/master/_data/releases.yml \
+          | grep -E '^- version: [0-9]+\.[0-9]+\.[0-9]+$' | head -1 | awk '{print $3}')
+        test -n "$latest"
+        echo "$latest" > .ruby-version
+        echo "version=$latest" >> "$GITHUB_OUTPUT"
+
+    - name: Check for changes
+      id: diff
+      shell: bash
+      run: |
+        if git diff --quiet .ruby-version; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
