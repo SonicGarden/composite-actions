@@ -1,0 +1,139 @@
+name: 'Staging Deploy'
+description: '指定ブランチから staging 等への自動デプロイ PR を作成・更新し、CI 通過後に自動マージされるよう設定する'
+
+# source_branch から target_branch への自動デプロイ PR を作成（既存 PR があれば本文を更新）し、
+# enable_auto_merge が 'true' なら CI 通過後に自動マージされるよう設定する composite action。
+#
+# 設計意図:
+# - 既存 PR の有無を先に確認し、あれば新規作成せず本文の更新のみ行う。
+# - コミットメッセージ・ブランチ名などの外部由来の値は run: に直接展開せず env 経由で受ける
+#   （GitHub Actions injection 対策）。
+#
+# NOTE: 発火条件（on.push.branches / [skip deploy] 判定）・runs-on・permissions・concurrency は
+#       呼び出し側 job が持つ。checkout は不要（gh CLI のみ使用）。
+#       (staging-deploy/README.md に呼び出し側の完全な例あり)
+inputs:
+  source_branch:
+    description: 'デプロイ元のブランチ名'
+    required: false
+    default: 'release-candidate'
+  target_branch:
+    description: 'デプロイ先のブランチ名'
+    required: false
+    default: 'staging'
+  enable_auto_merge:
+    description: "CI通過後にPRを自動マージするか（文字列 'true' / 'false'）"
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check existing PR
+      id: check-pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        SOURCE_BRANCH: ${{ inputs.source_branch }}
+        TARGET_BRANCH: ${{ inputs.target_branch }}
+      run: |
+        # NOTE: 既存のPRがあるかチェック
+        pr_number=$(gh pr list --head "$SOURCE_BRANCH" --base "$TARGET_BRANCH" --json number --jq '.[0].number // empty')
+        if [ -n "$pr_number" ]; then
+          echo "existing_pr=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "既存のPR #$pr_number が見つかりました"
+        else
+          echo "existing_pr=" >> "$GITHUB_OUTPUT"
+          echo "既存のPRは見つかりませんでした"
+        fi
+
+    - name: Create Pull Request
+      id: create-pr
+      if: steps.check-pr.outputs.existing_pr == ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        # NOTE: untrusted input を run: に直接展開せず env 経由で受ける（GitHub Actions injection 対策）
+        COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        SOURCE_BRANCH: ${{ inputs.source_branch }}
+        TARGET_BRANCH: ${{ inputs.target_branch }}
+      run: |
+        # NOTE: GitHub CLIでPRを作成
+        cat <<EOF > "$RUNNER_TEMP/pr_body.md"
+        ## デプロイ内容
+
+        ${SOURCE_BRANCH}ブランチの最新の変更を${TARGET_BRANCH}ブランチにデプロイします。
+
+        ### 変更内容
+        ${COMMIT_MESSAGE}
+
+        CIが全て通過したら、設定に応じて自動的にマージされます。
+
+        ---
+        _このPRは自動生成されました_
+        EOF
+
+        # NOTE: auto-deploy stagingラベルが存在しない場合は作成
+        if ! gh label list --search "auto-deploy staging" --json name --jq '.[].name' | grep -q "auto-deploy staging"; then
+          echo "auto-deploy stagingラベルが存在しないため作成します"
+          gh label create "auto-deploy staging" --color "0e8a16" --description "自動デプロイPR用のラベル"
+        fi
+
+        # NOTE: 現在の日時を取得してPRタイトルに含める
+        current_date=$(date '+%Y-%m-%d %H:%M')
+
+        pr_url=$(gh pr create \
+          --title "🚀 [$current_date] Deploy to ${TARGET_BRANCH} from ${SOURCE_BRANCH}" \
+          --body-file "$RUNNER_TEMP/pr_body.md" \
+          --base "${TARGET_BRANCH}" \
+          --head "${SOURCE_BRANCH}" \
+          --label "auto-deploy staging")
+
+        # NOTE: PRのURLからPR番号を抽出
+        pr_number=$(echo "$pr_url" | grep -oE '[0-9]+$')
+        echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+        echo "新しいPR #$pr_number を作成しました"
+
+    - name: Enable auto-merge
+      if: inputs.enable_auto_merge == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ steps.create-pr.outputs.pr_number || steps.check-pr.outputs.existing_pr }}
+      run: |
+        # NOTE: 新規作成・既存どちらのPRに対しても自動マージを設定（既存は未設定の場合のため）
+        gh pr merge "$PR_NUMBER" --auto --merge
+        echo "PR #$PR_NUMBER に自動マージを設定しました"
+
+    - name: Update existing PR
+      if: steps.check-pr.outputs.existing_pr != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        # NOTE: untrusted input を run: に直接展開せず env 経由で受ける（GitHub Actions injection 対策）
+        COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        SOURCE_BRANCH: ${{ inputs.source_branch }}
+        TARGET_BRANCH: ${{ inputs.target_branch }}
+        EXISTING_PR: ${{ steps.check-pr.outputs.existing_pr }}
+      run: |
+        # NOTE: 既存のPRの説明を最新のコミット情報で更新
+        cat <<EOF > "$RUNNER_TEMP/pr_body.md"
+        ## デプロイ内容
+
+        ${SOURCE_BRANCH}ブランチの最新の変更を${TARGET_BRANCH}ブランチにデプロイします。
+
+        ### 最新の変更内容
+        ${COMMIT_MESSAGE}
+
+        CIが全て通過したら、設定に応じて自動的にマージされます。
+
+        ---
+        _このPRは自動生成されました（最終更新: $(date '+%Y-%m-%d %H:%M:%S'))_
+        EOF
+
+        gh pr edit "${EXISTING_PR}" --body-file "$RUNNER_TEMP/pr_body.md"
+        echo "既存のPR #${EXISTING_PR} の説明を更新しました"
