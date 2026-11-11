@@ -1,0 +1,134 @@
+name: 'Claude Review CLI'
+description: '@aki77/claude-code-review CLI で PR を自動コードレビューする'
+
+# claude-review とは別に、@aki77/claude-code-review CLI をインストールして直接実行し PR のコードレビューを行う
+# composite action。CLI が gh CLI 経由で diff 取得・コメント投稿までを完結させるため、
+# 追加のプラグイン読み込み設定は不要。
+#
+# NOTE: 発火トリガー(on: pull_request / issue_comment)と発火条件(draft 除外・`/review` コメントの投稿者制限など)、
+#       runs-on / timeout-minutes / permissions / concurrency は呼び出し側 job が持つ。
+#       checkout は action 内で行う。
+#       (README の claude-review-cli 節に呼び出し側の完全な例あり)
+inputs:
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: false
+  anthropic_api_key:
+    description: 'Anthropic API key'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    # NOTE: pull_request / issue_comment のどちらでも PR 番号と HEAD SHA を解決する。
+    #       untrusted input を run: に直接展開せず env 経由で受ける（GitHub Actions injection 対策）
+    - name: Resolve PR
+      id: pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        EVENT_NAME: ${{ github.event_name }}
+        ISSUE_PR_URL: ${{ github.event.issue.pull_request.url }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        # composite の required: true は実行時に強制されないため、必須の値は明示的に検証する
+        if [ -z "$PR_NUMBER" ]; then
+          echo "PR number could not be resolved" >&2
+          exit 1
+        fi
+        if [ "$EVENT_NAME" = "issue_comment" ]; then
+          if [ -z "$ISSUE_PR_URL" ]; then
+            echo "This issue_comment is not on a pull request" >&2
+            exit 1
+          fi
+          sha=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
+        else
+          sha="$PR_HEAD_SHA"
+        fi
+        if [ -z "$sha" ]; then
+          echo "Failed to resolve head SHA of PR #${PR_NUMBER}" >&2
+          exit 1
+        fi
+        {
+          echo "number=${PR_NUMBER}"
+          echo "sha=${sha}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+
+    # NOTE: CLI は PR の作業ツリーの外にインストールする。PR 側の .npmrc（registry の差し替え）や
+    #       package.json の影響を受けず、シークレットのある環境で PR 由来のコードを npm 経由で実行しないため。
+    #       checkout より前に、作業ディレクトリ（まだ PR のコードが無い）ではなく $RUNNER_TEMP で実行する。
+    - name: Install Claude Code Review CLI
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      run: |
+        npm install --prefix "$RUNNER_TEMP/claude-code-review" --no-audit --no-fund @aki77/claude-code-review
+
+    # NOTE: CLI は HEAD と PR の head SHA の一致を確認するため、PR head SHA を checkout する。
+    #       fetch-depth: 0 で base ブランチも最新の状態で取得できるため、別途 git fetch は不要。
+    #       issue_comment はシークレットのある信頼コンテキストで動くため、トークンを .git/config に残さない。
+    #       起動できる人の制限は呼び出し側の if: で行う（README 参照）。
+    - name: Checkout PR head
+      uses: actions/checkout@v7
+      with:
+        token: ${{ github.token }}
+        fetch-depth: 0
+        persist-credentials: false
+        ref: ${{ steps.pr.outputs.sha }}
+
+    - name: Ensure reviewed-by-claude label exists
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        gh label create "reviewed-by-claude" \
+          --color "5319e7" \
+          --description "Claude Code による自動レビュー済み" \
+          --force
+
+    # NOTE: @aki77/claude-code-review CLIはgh CLI経由でコメント投稿するため、投稿者名義が
+    # claude[bot]ではなくgithub-actions[bot]になる。過去コメント削除もそれに合わせて
+    # usernamesをgithub-actions[bot]に変更し、bodyContainsで対象コメントを絞り込む
+    - uses: aki77/delete-pr-comments-action@v3
+      with:
+        token: ${{ github.token }}
+        pullRequestNumber: ${{ steps.pr.outputs.number }}
+        usernames: github-actions[bot]
+        noReply: "true"
+        onlyNotMinimized: "true"
+        includeOverallReviewComments: "true"
+        bodyContains: "Claude Code Review"
+
+    - name: Run Claude Code Review
+      shell: bash
+      env:
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        DEBUG_FLAG: ${{ runner.debug == '1' && '--debug' || '' }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
+        # NOTE: `cond && '' || x` は '' が falsy のため常に x になる。OAuth トークンが空のときだけ API キーを渡す
+        ANTHROPIC_API_KEY: ${{ inputs.claude_code_oauth_token == '' && inputs.anthropic_api_key || '' }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # NOTE: $DEBUG_FLAG は意図的に引用符なしで展開する（空のときは引数ごと消すため）
+        # shellcheck disable=SC2086
+        "$RUNNER_TEMP/claude-code-review/node_modules/.bin/code-review" pr "$PR_NUMBER" \
+          --comment $DEBUG_FLAG \
+          --summary-file "$GITHUB_STEP_SUMMARY" \
+          --no-fail-on-findings
+
+    - name: Add reviewed-by-claude label
+      if: success()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+      run: |
+        gh pr edit "$PR_NUMBER" --add-label "reviewed-by-claude"
