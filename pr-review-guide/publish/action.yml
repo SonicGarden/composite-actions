@@ -1,0 +1,99 @@
+name: 'PR Review Guide (publish)'
+description: 'generate が作った artifact の URL を PR 本文へ marker 方式で upsert し、review-guide-done ラベルを付ける'
+
+# generate action の出力(artifact の URL など)を PR 本文へ貼り、ラベルを付ける composite action。
+# Claude を動かさない書き込み専用ジョブで使う(generate は読み取り専用ジョブで使う)。
+#
+# NOTE: ラベル操作(gh label create / gh pr edit --add-label)には issues: write が要る
+#       (ラベルは issues/PR 共通リソースで issues スコープで制御されるため、
+#       pull-requests: write だけでは 403 になる)。権限は呼び出し側 job の permissions で
+#       与える。このジョブでは Claude を動かさないので、書き込み権限を信頼できない
+#       テキストの読み手に渡すことにはならない。
+# NOTE: checkout は不要。gh は runner 標準搭載で、PR のコードを一切チェックアウトせずに
+#       書き込み権限を使う形になり、権限分離としても素直になる。
+# NOTE: GH_REPO を置くと、checkout していない(= ローカルリポジトリが無い)環境でも
+#       gh がリポジトリを解決できるため、各コマンドの --repo 指定が不要になる。
+#       composite には job-level env が無いので、各 step に env: で書く。
+inputs:
+  pr_number:
+    description: '対象 PR の番号（generate の pr_number output）'
+    required: true
+  artifact_url:
+    description: 'artifact の URL（generate の artifact_url output）'
+    required: true
+  head_sha:
+    description: '対象 PR の head SHA（generate の head_sha output）'
+    required: true
+  retention_days:
+    description: 'artifact の保持日数（generate の retention_days output）。PR 本文の文言に使う'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    # composite の required: true は実行時に強制されないため、必須の値は明示的に検証する
+    - name: Validate inputs
+      shell: bash
+      env:
+        PR_NUMBER: ${{ inputs.pr_number }}
+        ARTIFACT_URL: ${{ inputs.artifact_url }}
+        HEAD_SHA: ${{ inputs.head_sha }}
+        RETENTION_DAYS: ${{ inputs.retention_days }}
+      run: |
+        for name in PR_NUMBER ARTIFACT_URL HEAD_SHA RETENTION_DAYS; do
+          if [ -z "${!name}" ]; then
+            echo "input is required but empty: ${name}" >&2
+            exit 1
+          fi
+        done
+
+    - name: Ensure review-guide-done label exists
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        gh label create "review-guide-done" \
+          --color "1d76db" \
+          --description "レビューガイド生成済み(push での自動再発動を止める)" \
+          --force
+
+    # NOTE: 本文の取得に --jq .body を使わない。jq は出力に改行を足し、シェルの $(...) は
+    #       末尾改行を落とすため、いずれも本文のバイト列を保てない。JSON をそのまま python に
+    #       渡せば API が返した文字列と完全に一致する。
+    - name: Upsert review guide block into PR body
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        # NOTE: 信頼できない値・モデル出力をスクリプト本文に展開せず env 経由で渡す
+        #       (リポジトリ共通の方針)。python 側は os.environ しか見ないので、
+        #       ${{ }} を python ソースへ差し込む経路が存在しない。
+        ARTIFACT_URL: ${{ inputs.artifact_url }}
+        HEAD_SHA: ${{ inputs.head_sha }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # NOTE: upload-artifact の retention-days と同じ値(generate の output)を参照する。
+        #       PR 本文の文言をリテラルで書くと、値を変えたときに表示と実態がずれる。
+        RETENTION_DAYS: ${{ inputs.retention_days }}
+        # NOTE: 書き出し先はここだけで定義し、python と gh pr edit の両方から同じ env を
+        #       参照する(シェル変数と env で二重に持つと片方の書き換えでパスがずれる)。
+        OUT_FILE: ${{ runner.temp }}/new-body.md
+      run: |
+        set -euo pipefail
+        gh api "repos/{owner}/{repo}/pulls/${PR_NUMBER}" | python3 "$GITHUB_ACTION_PATH/upsert-pr-body.py"
+        gh pr edit "$PR_NUMBER" --body-file "$OUT_FILE"
+
+    # NOTE: ラベル付与は必ず upsert の後に置く。順序を逆にすると upsert 失敗時にラベルだけが
+    #       残り、以降の push が呼び出し側 generate ジョブの if で弾かれて二度と生成されない
+    #       (静かな取りこぼし)。upsert が失敗すれば GitHub Actions の既定動作で後続ステップは
+    #       実行されないため、ここに if: success() を明示する必要はない。
+    - name: Add review-guide-done label
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+      run: |
+        gh pr edit "$PR_NUMBER" --add-label "review-guide-done"
