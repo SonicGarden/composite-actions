@@ -1,0 +1,423 @@
+name: 'Claude Review'
+description: 'Claude Code による PR の自動コードレビュー（インラインコメント・suggestion）'
+
+# PR の差分を Claude Code にレビューさせ、インラインコメント（suggestion 付き）とまとめコメントを投稿する composite action。
+#
+# NOTE: 発火トリガー(on: pull_request / issue_comment)と発火条件(draft 除外・`/review` コメントの投稿者制限など)、
+#       runs-on / timeout-minutes / permissions / concurrency は呼び出し側 job が持つ。
+#       checkout は action 内で行う。pull_request では従来どおり merge ref、issue_comment では PR HEAD を checkout する。
+#       (README の claude-review 節に呼び出し側の完全な例あり)
+inputs:
+  guideline_files:
+    description: 'Paths to guideline files for code review (newline-separated)'
+    required: true
+  model:
+    description: 'Claude model to use (default: sonnet; empty string falls back to the action default)'
+    required: false
+    default: 'sonnet'
+  minimum_changed_lines:
+    description: 'Minimum number of changed lines since last review to trigger review (0 means always run)'
+    required: false
+    default: '0'
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: false
+  anthropic_api_key:
+    description: 'Anthropic API key'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    # NOTE: pull_request / issue_comment のどちらでも PR 番号を解決する。
+    #       untrusted input を run: に直接展開せず env 経由で受ける（GitHub Actions injection 対策）
+    - name: Resolve PR number
+      id: pr
+      shell: bash
+      env:
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        EVENT_NAME: ${{ github.event_name }}
+        ISSUE_PR_URL: ${{ github.event.issue.pull_request.url }}
+        GUIDELINE_FILES: ${{ inputs.guideline_files }}
+      run: |
+        # composite の required: true は実行時に強制されないため明示的に検証する
+        if [ -z "$GUIDELINE_FILES" ]; then
+          echo "guideline_files is required" >&2
+          exit 1
+        fi
+        if [ -z "$PR_NUMBER" ]; then
+          echo "PR number could not be resolved" >&2
+          exit 1
+        fi
+        if [ "$EVENT_NAME" = "issue_comment" ] && [ -z "$ISSUE_PR_URL" ]; then
+          echo "This issue_comment is not on a pull request" >&2
+          exit 1
+        fi
+        echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+    # NOTE: issue_comment ではデフォルトブランチが checkout されるため、PR HEAD を明示的に checkout する。
+    #       起動できる人の制限は呼び出し側の if: で行う（README 参照）。
+    #       issue_comment はシークレットのある信頼コンテキストで動くため、トークンを .git/config に残さない。
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        token: ${{ github.token }}
+        fetch-depth: 0
+        persist-credentials: false
+        ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', steps.pr.outputs.number) || '' }}
+
+    # NOTE: issue_comment では PR HEAD（fork 由来の untrusted コードの可能性あり）が作業ツリーにある。
+    #       Claude Code が読み込む設定（.claude/ のフック・権限、.mcp.json）を PR 側で差し替えられないよう、
+    #       ベースブランチの内容で上書きする（ベースに無ければ削除する）。
+    #       ガイドラインファイルも後続 step でベースブランチから読む。
+    - name: Restore trusted config from base branch
+      id: trusted-base
+      if: github.event_name == 'issue_comment'
+      shell: bash
+      env:
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        base_ref=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json baseRefName --jq '.baseRefName')
+        if [ -z "$base_ref" ]; then
+          echo "Failed to resolve base branch of PR #${PR_NUMBER}" >&2
+          exit 1
+        fi
+        base="origin/${base_ref}"
+        for path in .claude .mcp.json; do
+          rm -rf -- "$path"
+          if git cat-file -e "${base}:${path}" 2>/dev/null; then
+            git checkout "$base" -- "$path"
+          fi
+        done
+        echo "ref=${base}" >> "$GITHUB_OUTPUT"
+
+    - name: Check for skip review message
+      id: check-skip-message
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        COMMIT_MESSAGE=$(git log -1 --pretty=%B "$HEAD_SHA")
+        echo "Latest commit message: $COMMIT_MESSAGE"
+        if [[ "$COMMIT_MESSAGE" == *"[skip review]"* ]]; then
+          echo "skip=true" >> $GITHUB_OUTPUT
+          echo "Skipping review due to [skip review] in commit message"
+        else
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Proceeding with review"
+        fi
+
+    - name: Check minimum changed lines since last review
+      id: check-minimum-lines
+      if: github.event_name == 'pull_request' && steps.check-skip-message.outputs.skip != 'true' && inputs.minimum_changed_lines != '0'
+      continue-on-error: true
+      shell: bash
+      env:
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        MIN_LINES: ${{ inputs.minimum_changed_lines }}
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        echo "Checking skip conditions..."
+
+        # PR 全体の変更行数（additions + deletions）を API から取得する
+        # NOTE: gh pr diff には --numstat が無いため PR files API を使う。
+        #       取得に失敗した場合は空を返し、呼び出し元でレビューする側に倒す
+        pr_changed_lines() {
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+            --jq '.[] | .additions + .deletions' | awk '{sum+=$1} END {print sum+0}'
+        }
+
+        # 既存のClaude Code Reviewがあるかチェック
+        claude_reviews=$(gh pr view "$PR_NUMBER" --json reviews --jq '.reviews[] | select(.author.login == "claude")')
+        existing_review=$(echo "$claude_reviews" | jq -r '.id' | head -1)
+
+        if [ -z "$existing_review" ]; then
+          echo "should_skip=false" >> $GITHUB_OUTPUT
+          echo "skip_reason=No existing claude review found" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # 前回のClaude レビューの実施時点を特定
+        last_review_time=$(echo "$claude_reviews" | jq -r '.submittedAt' | sort -r | head -1)
+        echo "Last review time: $last_review_time"
+
+        if [ -z "$last_review_time" ]; then
+          echo "should_skip=false" >> $GITHUB_OUTPUT
+          echo "skip_reason=No previous claude review found" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # 前回レビュー時点に最も近いコミットを特定
+        last_review_commit=$(git log --until="$last_review_time" --format="%H" -1 2>/dev/null || echo "")
+        echo "Last review commit: $last_review_commit"
+
+        if [ -z "$last_review_commit" ]; then
+          # フォールバック: 前回レビュー時点のコミットが見つからない場合はPR全体の変更行数を使用
+          echo "Warning: Failed to find last review commit. Using entire PR diff for line count calculation."
+          changed_lines=$(set -o pipefail; pr_changed_lines) || changed_lines=""
+        else
+          # 前回レビュー時点から現在までの正確な差分行数を計算
+          # NOTE: pipefail で git diff 自体の失敗を検知する（awk の終了コードだけでは検知できない）
+          changed_lines=$(set -o pipefail; git diff --numstat "$last_review_commit"..HEAD 2>/dev/null | awk '{sum+=$1+$2} END {print sum+0}') || changed_lines=""
+
+          # git diffでエラーが発生した場合はフォールバック
+          if [ -z "$changed_lines" ]; then
+            echo "Warning: git diff failed or returned empty result. Using entire PR diff for line count calculation."
+            changed_lines=$(set -o pipefail; pr_changed_lines) || changed_lines=""
+          fi
+        fi
+
+        # 変更行数を取得できなかった場合は、誤ってスキップしないようレビューを実行する
+        if [ -z "$changed_lines" ]; then
+          echo "should_skip=false" >> $GITHUB_OUTPUT
+          echo "skip_reason=Failed to count changed lines" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        if [ "$changed_lines" -le "$MIN_LINES" ]; then
+          echo "should_skip=true" >> $GITHUB_OUTPUT
+          echo "skip_reason=Changed lines ($changed_lines) is below minimum ($MIN_LINES)" >> $GITHUB_OUTPUT
+        else
+          echo "should_skip=false" >> $GITHUB_OUTPUT
+          echo "skip_reason=Changed lines ($changed_lines) exceeds minimum ($MIN_LINES)" >> $GITHUB_OUTPUT
+        fi
+
+    - uses: aki77/delete-pr-comments-action@v3
+      if: steps.check-skip-message.outputs.skip != 'true' && steps.check-minimum-lines.outputs.should_skip != 'true'
+      with:
+        token: ${{ github.token }}
+        pullRequestNumber: ${{ steps.pr.outputs.number }}
+        usernames: claude[bot]
+        noReply: "true"
+        onlyNotMinimized: "true"
+        includeOverallReviewComments: "true"
+
+    - name: Get existing Claude comments
+      if: steps.check-skip-message.outputs.skip != 'true' && steps.check-minimum-lines.outputs.should_skip != 'true'
+      uses: actions/github-script@v9
+      env:
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+      with:
+        script: |
+          const query = `query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $number) {
+                reviewThreads(first: 100) {
+                  nodes {
+                    id
+                    isResolved
+                    comments(last: 20) {
+                      nodes {
+                        author {
+                          login
+                        }
+                        body
+                        path
+                        line
+                        createdAt
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }`;
+
+          const variables = {
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            number: Number(process.env.PR_NUMBER)
+          };
+
+          const result = await github.graphql(query, variables);
+
+          // Extract only Claude[bot] comments (from latest)
+          const claudeComments = result.repository.pullRequest.reviewThreads.nodes
+            .filter(thread =>
+              thread.comments.nodes.length > 0 &&
+              // NOTE: 削除済みユーザーのコメントは author が null になるため optional chaining で参照する
+              thread.comments.nodes[0].author?.login === 'claude'
+            )
+            .map(thread => ({
+              threadId: thread.id,
+              isResolved: thread.isResolved,
+              path: thread.comments.nodes[0].path,
+              line: thread.comments.nodes[0].line,
+              body: thread.comments.nodes[0].body,
+              createdAt: thread.comments.nodes[0].createdAt
+            }));
+
+          console.debug(claudeComments);
+          require('fs').writeFileSync('.existing_claude_comments.json',
+            JSON.stringify(claudeComments, null, 2));
+
+          console.log(`Found ${claudeComments.length} Claude comments`);
+
+    - name: Read guideline files
+      id: read-guideline
+      if: steps.check-skip-message.outputs.skip != 'true' && steps.check-minimum-lines.outputs.should_skip != 'true'
+      shell: bash
+      env:
+        GUIDELINE_FILES: ${{ inputs.guideline_files }}
+        # NOTE: issue_comment のときはベースブランチの ref（PR 側で書き換えられたガイドラインを読まない）。それ以外は空
+        TRUSTED_REF: ${{ steps.trusted-base.outputs.ref }}
+      run: |
+        # NOTE: 区切り文字をランダムにして、ガイドライン本文中に区切りと同じ行があっても出力が壊れないようにする
+        delimiter="EOF_$(openssl rand -hex 16)"
+        echo "guideline_content<<${delimiter}" >> $GITHUB_OUTPUT
+
+        # Process each guideline file (newline-separated)
+        printf '%s\n' "$GUIDELINE_FILES" | while IFS= read -r guideline_file; do
+          # Skip empty lines
+          if [ -z "$guideline_file" ]; then
+            continue
+          fi
+
+          if [ -n "$TRUSTED_REF" ]; then
+            if git cat-file -e "${TRUSTED_REF}:${guideline_file}" 2>/dev/null; then
+              echo "Reading guideline file: $guideline_file (from ${TRUSTED_REF})"
+              git show "${TRUSTED_REF}:${guideline_file}" >> $GITHUB_OUTPUT
+              echo "" >> $GITHUB_OUTPUT  # Add newline between files
+            else
+              echo "Warning: Guideline file not found in ${TRUSTED_REF}: $guideline_file" >&2
+            fi
+          elif [ -f "$guideline_file" ]; then
+            echo "Reading guideline file: $guideline_file"
+            cat "$guideline_file" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT  # Add newline between files
+          else
+            echo "Warning: Guideline file not found: $guideline_file" >&2
+          fi
+        done
+
+        echo "${delimiter}" >> $GITHUB_OUTPUT
+        echo "Guideline files processed"
+
+    - name: Run Claude Code Review
+      id: claude-review
+      if: steps.check-skip-message.outputs.skip != 'true' && steps.check-minimum-lines.outputs.should_skip != 'true'
+      uses: anthropics/claude-code-action@v1
+      env:
+        # NOTE: 初期値の25000だと mcp__github__get_pull_request_files でトークン不足になるケースが頻繁に発生するため
+        # SEE: https://docs.anthropic.com/ja/docs/claude-code/settings#%E7%92%B0%E5%A2%83%E5%A4%89%E6%95%B0
+        MAX_MCP_OUTPUT_TOKENS: 50000
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        # NOTE: `cond && '' || x` は '' が falsy のため常に x になる。OAuth トークンが空のときだけ API キーを渡す
+        anthropic_api_key: ${{ inputs.claude_code_oauth_token == '' && inputs.anthropic_api_key || '' }}
+
+        # Direct prompt for automated review (no @claude mention needed)
+        prompt: |
+          REPO: ${{ github.repository }}
+          PR NUMBER: ${{ steps.pr.outputs.number }}
+          TODAY: ${{ github.event.pull_request.updated_at || github.event.issue.updated_at }}
+
+          ${{ steps.read-guideline.outputs.guideline_content }}
+
+          # レビュー実施指示
+
+          PRレビューを実施してください。
+
+          **重要: すべてのフィードバックとコメントは日本語で提供してください。**
+
+          **レビューの基本原則:**
+          - このPRの現在の状態（最新のコミット）に基づいてレビューしてください
+          - diffに表示される変更内容を適切に解釈し、現在のコードの問題を指摘してください
+          - 既に存在しないコードや、過去のコミットで修正済みの内容については指摘しないでください
+
+          **API検証ルール:**
+          - フレームワークやライブラリのAPIについて指摘する際は、必ず事前にcontext7 MCPツール（`mcp__context7__resolve-library-id`と`mcp__context7__get-library-docs`）を使用して正確性を検証してください
+          - 検証できない場合は、推測に基づく指摘を避け、確認可能な事実のみをレビューコメントに含めてください
+          - これにより、誤った情報（ハルシネーション）によるレビューを防止します
+
+          **レビュー手順:**
+          1. `mcp__github__create_pending_pull_request_review`でレビュー開始
+          2. `mcp__github__get_pull_request_files`で現在のPRに含まれるファイル一覧を取得
+          3. `mcp__github__get_pull_request_diff`で変更内容を確認
+          4. 変更されたファイルについては、実際のファイル（チェックアウト済み）を読み込んで正確な行番号を確認
+          5. `mcp__github__add_comment_to_pending_review`で具体的なフィードバックをインライン追加
+             - **重要**: ファイルが現在のPRに存在することを確認してからコメントを追加
+             - **重要**: diffの行番号ではなく、実際のファイルの行番号を使用すること
+             - 存在するファイルの最新状態に基づいてレビュー
+             - **重要**: `.existing_claude_comments.json`を確認し、同じ行に重複コメントがある場合は投稿をスキップ
+             - **重要**: コード修正の提案を行う場合は、必ずGitHubのsuggestion機能を使用してください
+
+             **APIパラメータの指定方法:**
+             - 単一行の修正:
+               - `line`: 対象行番号（必須）
+               - `subjectType`: "LINE"
+               - `body`: "修正提案\n```suggestion\n改善されたコード\n```"
+
+             - 複数行の修正（範囲指定）:
+               - `startLine`: コメント対象範囲の開始行番号（必須）
+               - `line`: コメント対象範囲の終了行番号（必須、startLine以上の値）
+               - `startSide`: "RIGHT"（追加された行の場合）
+               - `side`: "RIGHT"（追加された行の場合）
+               - `subjectType`: "LINE"
+               - `body`: "修正提案\n```suggestion\n置き換え後のコード（行数は自由）\n```"
+
+             - **重要**:
+               - 複数行をコメント対象とする場合は`startLine`と`line`の両方を必ず指定
+               - `startLine`から`line`までの範囲がハイライトされ、その範囲全体がsuggestionの内容で置き換えられる
+               - suggestionの行数は元の範囲と異なっても問題ない（削除や追加が可能）
+             - コメント内で修正案を示す際は、```suggestion と ``` で囲んでください
+          6. `mcp__github__submit_pending_pull_request_review`でイベントタイプ"COMMENT"として送信
+
+          **重要な制約:**
+          - **削除された行（`-`）自体には直接コメントできない**（GitHub APIの制約）
+          - 削除に関する指摘は、その削除箇所の近くの有効な行にコメントする
+          - ファイルが完全に削除された場合は、PRレビューの総評でコメント
+          - **既に存在しないコード**（過去のコミットで追加→削除されたもの）への指摘は避ける
+
+          **レビューコメントの種類と配置:**
+
+          1. **追加コードの問題**（`+`の行にコメント）:
+             - 「ユーザー入力をエスケープ処理せずに使用しています。セキュリティリスクがあります」
+             - 「このメソッドにエラーハンドリングを追加してください」
+
+          2. **削除による問題**（削除箇所付近の有効な行にコメント）:
+             - 「上記で入力検証が削除されていますが、セキュリティ上必要です」
+             - 「重要なエラーハンドリングが削除されているようです。意図的な削除でしょうか？」
+
+          3. **避けるべきコメント**:
+             - 既に存在しないメソッドへの指摘
+             - 過去のコミットで修正済みの内容の繰り返し
+             - 現在のコードに反映されていない古い状態への指摘
+
+          **削除コードのレビュー基準:**
+          - セキュリティ対策（sanitize、エスケープ処理など）の削除は要確認
+          - エラーハンドリングやバリデーションの削除は要確認
+          - テストコードの削除は、対応する機能削除と整合性があるか確認
+          - 単なるリファクタリングや不要コードの削除は問題なし
+
+          建設的で具体的な改善提案を行い、行固有の問題にはインラインコメント、全体総括はレビュー送信時に含めてください。
+
+          **補足: suggestion機能の使用について**
+          コード修正を提案する際は、開発者が簡単に変更を適用できるよう、GitHubのsuggestion機能を積極的に活用してください。
+
+          単一行の例：
+          ```suggestion
+          改善されたコード行をここに記述
+          ```
+
+          複数行の例（startLineとlineで範囲指定）：
+          ```suggestion
+          改善された複数行の
+          コードをここに
+          記述します
+          ```
+
+          これにより、開発者は「Commit suggestion」ボタンをクリックするだけで提案を適用できます。
+
+          **ポジティブなフィードバックについて:**
+          - **インラインでは控えめに:** インラインで言及するのは、特に優れた設計や他の開発者の参考になるような独創的な実装など、特筆すべき点に限定します。
+          - **まとめコメントで言及:** 全体的に良かった点や、PR全体に対するポジティブな感想は、レビュー提出時の「まとめコメント」に集約して記述してください。
+
+        use_sticky_comment: true
+        claude_args: |
+          ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
+          --allowedTools "mcp__github_comment__update_claude_comment,mcp__github__create_pending_pull_request_review,mcp__github__add_comment_to_pending_review,mcp__github__submit_pending_pull_request_review,mcp__github__get_pull_request_diff,mcp__github__get_pull_request_files,mcp__context7__resolve-library-id,mcp__context7__get-library-docs"
+          --mcp-config '{"mcpServers": {"context7": {"type": "sse", "url": "https://mcp.context7.com/sse"}}}'
