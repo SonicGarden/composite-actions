@@ -1,6 +1,6 @@
 # claude-review-cli
 
-`@aki77/claude-code-review` CLI を `npx` で実行して PR の自動コードレビューを行うアクションです。GitHub MCP ツールを直接呼び出す `claude-review` とは異なり、CLI が gh CLI 経由で diff を取得してレビューし、コメントを投稿します。`pull_request` による自動実行に加え、PR への `/review` コメントでも再実行できます。
+`@aki77/claude-code-review` CLI を実行して PR の自動コードレビューを行うアクションです。GitHub MCP ツールを直接呼び出す `claude-review` とは異なり、CLI が gh CLI 経由で diff を取得してレビューし、コメントを投稿します。`pull_request` による自動実行に加え、PR への `/review` コメントでも再実行できます。
 
 ## 使用方法
 
@@ -59,7 +59,7 @@ jobs:
 
 - アクション内で checkout するため、呼び出し側で `actions/checkout` を前置しないでください
 - checkout は PR の head SHA を `persist-credentials: false` で行い、トークンを `.git/config` に残しません（`issue_comment` はシークレットが使える信頼コンテキストで動くため）
-- PR のコードと `CLAUDE.md`・`.claude/review.yaml` は CLI に読まれます。また CLI は PR の作業ツリーで `npx` を実行するため、`.npmrc` なども PR 側のものが使われます。`/review` を起動できる人は呼び出し側の `if:` で制限し、fork からの PR では中身を確認してから `/review` してください（上記例では `author_association` が OWNER / MEMBER / COLLABORATOR の場合のみ）
+- PR のコードと `CLAUDE.md`・`.claude/review.yaml` は CLI に読まれます。CLI 自体は PR の作業ツリーの外（`$RUNNER_TEMP`）にインストールして実行するため、PR 側の `.npmrc` や `package.json` は npm には使われません。`/review` を起動できる人は呼び出し側の `if:` で制限し、fork からの PR では中身を確認してから `/review` してください（上記例では `author_association` が OWNER / MEMBER / COLLABORATOR の場合のみ）
 - リポジトリ固有の除外条件（特定ブランチ間の PR を除外するなど）が必要な場合は、呼び出し側 job の `if:` に条件を追加してください
 - runner（`runs-on`）・タイムアウト（`timeout-minutes`）・権限（`permissions`）・`concurrency` は呼び出し側の job / ワークフローで指定します
 - 呼び出し側で `gh actions-lock` を実行すると、アクション本体と内部で使用している actions を `actions.lock` で固定できます

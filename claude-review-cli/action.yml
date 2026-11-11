@@ -1,7 +1,7 @@
 name: 'Claude Review CLI'
 description: '@aki77/claude-code-review CLI で PR を自動コードレビューする'
 
-# claude-review とは別に、@aki77/claude-code-review CLI を npx で直接実行して PR のコードレビューを行う
+# claude-review とは別に、@aki77/claude-code-review CLI をインストールして直接実行し PR のコードレビューを行う
 # composite action。CLI が gh CLI 経由で diff 取得・コメント投稿までを完結させるため、
 # 追加のプラグイン読み込み設定は不要。
 #
@@ -56,6 +56,20 @@ runs:
           echo "sha=${sha}"
         } >> "$GITHUB_OUTPUT"
 
+    - name: Setup Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+
+    # NOTE: CLI は PR の作業ツリーの外にインストールする。PR 側の .npmrc（registry の差し替え）や
+    #       package.json の影響を受けず、シークレットのある環境で PR 由来のコードを npm 経由で実行しないため。
+    #       checkout より前に、作業ディレクトリ（まだ PR のコードが無い）ではなく $RUNNER_TEMP で実行する。
+    - name: Install Claude Code Review CLI
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      run: |
+        npm install --prefix "$RUNNER_TEMP/claude-code-review" --no-audit --no-fund @aki77/claude-code-review
+
     # NOTE: CLI は HEAD と PR の head SHA の一致を確認するため、PR head SHA を checkout する。
     #       fetch-depth: 0 で base ブランチも最新の状態で取得できるため、別途 git fetch は不要。
     #       issue_comment はシークレットのある信頼コンテキストで動くため、トークンを .git/config に残さない。
@@ -67,11 +81,6 @@ runs:
         fetch-depth: 0
         persist-credentials: false
         ref: ${{ steps.pr.outputs.sha }}
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v7
-      with:
-        node-version: 24
 
     - name: Ensure reviewed-by-claude label exists
       shell: bash
@@ -109,7 +118,7 @@ runs:
       run: |
         # NOTE: $DEBUG_FLAG は意図的に引用符なしで展開する（空のときは引数ごと消すため）
         # shellcheck disable=SC2086
-        npx @aki77/claude-code-review -- pr "$PR_NUMBER" \
+        "$RUNNER_TEMP/claude-code-review/node_modules/.bin/code-review" pr "$PR_NUMBER" \
           --comment $DEBUG_FLAG \
           --summary-file "$GITHUB_STEP_SUMMARY" \
           --no-fail-on-findings
