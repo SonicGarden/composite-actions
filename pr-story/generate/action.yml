@@ -152,6 +152,14 @@ runs:
         # NOTE: スクリプトの作業ディレクトリは os.tmpdir()/pr-story/<owner>-<repo>-<N> になる。
         #       /tmp を決め打ちにせず、node が実際に使う値を --add-dir と成果物チェックの両方で使う。
         echo "tmpdir=$(node -p 'require("os").tmpdir()')" >> "$GITHUB_OUTPUT"
+        # WARNING: この chmod を外してはいけない。Claude には Write と、このスクリプトを node で
+        #          実行する許可を同時に与えている。スキルのディレクトリが書き込み可能なままだと、
+        #          PR 本文などに仕込まれたプロンプトインジェクションでスクリプトを書き換えてから
+        #          実行させ、任意のコードを走らせることができる(読み取り専用トークンでも、
+        #          環境にある Claude の認証情報を持ち出せる)。Claude は Bash で chmod を実行
+        #          できないので、ここで書き込み権限を外せば書き換えも新規ファイルの追加も防げる。
+        #          スクリプトの作業ファイルは os.tmpdir() 配下に書かれるので影響しない。
+        chmod -R a-w "$HOME/.claude/skills/pr-story"
 
     # NOTE: diff が前回から変わっていなければ(check が fresh)、Claude を起動せずに終える。
     #       /story コメント経路は明示的な再生成依頼なので fresh でも常に実行する
