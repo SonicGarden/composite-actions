@@ -1,5 +1,9 @@
 # pr-review-guide
 
+> [!WARNING]
+> **この action は非推奨です。** 後継の [pr-story](../pr-story/README.md) へ移行してください。
+> 移行手順は pr-story の README の「pr-review-guide からの移行」節を参照してください。
+
 PR ごとに「初見のレビュアー向け解説ページ（自己完結 HTML）」を Claude に生成させ、artifact の URL を PR 本文へ marker 方式で upsert する composite action のセットです。`aki77/skills` の `pr-review-guide` スキルで HTML を生成し、`/guide` PR コメントによる再生成と、`review-guide-done` ラベルによる二重生成の防止に対応しています。
 
 元ワークフローは権限を分けるために 2 ジョブ構成（generate: 読み取り専用で Claude を実行、publish: 書き込み）です。Claude は PR 本文・コミットメッセージ・issue 本文という作成者が自由に書けるテキストを読むため、Claude を動かすジョブに書き込み権限を渡さないことが前提です。composite action は 1 ジョブ内でしか動かないため、ジョブごとに 1 つずつ、計 2 つの action に分かれています。

@@ -1,5 +1,5 @@
 name: 'PR Review Guide (publish)'
-description: 'generate が作った artifact の URL を PR 本文へ marker 方式で upsert し、review-guide-done ラベルを付ける'
+description: '[非推奨] pr-story へ移行してください。generate が作った artifact の URL を PR 本文へ marker 方式で upsert し、review-guide-done ラベルを付ける'
 
 # generate action の出力(artifact の URL など)を PR 本文へ貼り、ラベルを付ける composite action。
 # Claude を動かさない書き込み専用ジョブで使う(generate は読み取り専用ジョブで使う)。

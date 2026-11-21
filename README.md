@@ -14,6 +14,7 @@ GitHub Actionsで使用するComposite Actionsのコレクション
 - [get-user-secret-key](get-user-secret-key/README.md) - ユーザー名を取得し、Secretキーを動的に検索
 - [heroku-deploy-notify](heroku-deploy-notify/README.md) - Heroku デプロイの完了/失敗を検知して PR にコメント
 - [license-finder](license-finder/README.md) - ライセンスチェックと承認済みライセンスの管理
-- [pr-review-guide](pr-review-guide/README.md) - PR ごとの初見レビュアー向け解説ページを Claude で生成し PR 本文へ追記（generate / publish）
+- [pr-review-guide](pr-review-guide/README.md) - PR ごとの初見レビュアー向け解説ページを Claude で生成し PR 本文へ追記（generate / publish）（非推奨: pr-story へ移行）
+- [pr-story](pr-story/README.md) - PR の差分を章立てした解説を Claude で生成し sticky コメントとして投稿（generate / publish）
 - [staging-deploy](staging-deploy/README.md) - staging 等への自動デプロイ PR を作成・更新し自動マージを設定
 - [update-ruby-version](update-ruby-version/README.md) - .ruby-version を最新の安定版 Ruby に更新する PR を作成してマージ（check / merge）

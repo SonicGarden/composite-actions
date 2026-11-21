@@ -5,6 +5,8 @@ updates:
   - "/"
   - "/update-ruby-version/check"
   - "/update-ruby-version/merge"
+  - "/pr-story/generate"
+  - "/pr-story/publish"
   schedule:
     interval: weekly
   cooldown:
