@@ -1,0 +1,288 @@
+name: 'PR Story (generate)'
+description: 'PR の差分を章立てした sticky コメント用の story.json を Claude で生成し、artifact としてアップロードする'
+
+# aki77/skills の pr-story スキルで、PR の差分を章立てした sticky コメントの元になる
+# story.json を生成して artifact へ置く composite action。コメントの投稿は publish action が
+# 担う(generate / publish の 2 つに分けているのはトークン権限の分離のため)。
+#
+# スキル単体では Claude 自身が post でコメントを投稿するが、Claude は PR 本文・コミット・
+# issue といった作成者が自由に書ける信頼できないテキストを読むため、書き込みトークンを
+# 渡さない。そこで 2 つに分けている。
+#   - generate(読み取り専用): Claude に --dry-run で story.json を書かせ、story.json だけを artifact にする
+#   - publish(書き込み): Claude を動かさず、pin したスクリプトで prep → validate → render → post を行う
+# diff・リンク・投稿先・Markdown の組み立ては publish 側でスクリプトから作り直すので、
+# Claude 由来の入力は validate を通る story.json だけになる。
+#
+# 最重要: composite action は permissions を持てない。このジョブの「読み取り専用」という
+#         保証は、呼び出し側の generate ジョブの `permissions:` がすべて担う。
+#         - contents: read / pull-requests: read / issues: read のみを与える
+#         - id-token: write を絶対に付けない(理由は Generate story (Claude) ステップの
+#           github_token の WARNING を参照)
+#         Claude が読むのは PR 本文・コミットメッセージ・issue 本文という「作成者が自由に
+#         書ける信頼できないテキスト」であり、プロンプトインジェクションに対する実効的な
+#         境界は --allowedTools の列挙ではなくトークンのスコープだけである。
+#         書き込みは Claude が動かない publish ジョブに隔離する。
+#         NOTE: issues: read が必要なのは、明示的な permissions が「列挙しないスコープを none に
+#               する」ため。これが無いと PR 本文が issue にリンクしているときの gh issue view が
+#               private リポジトリで 403 になる。読み取りのみなので上記の方針は崩れない。
+#
+# NOTE: スキルは `--scope user`(~/.claude/skills/)へ入れる。claude-code-action は PR 上で
+#       動くとき .claude/ 等の SENSITIVE_PATHS を base の内容へ戻すので、project スコープに
+#       置くとその復元でスキルごと消えてしまう。
+#
+# NOTE: 発火トリガー(on: pull_request / issue_comment)と発火条件、runs-on / timeout-minutes /
+#       permissions / concurrency は呼び出し側 job が持つ。checkout は action 内で行う。
+#       (pr-story/README.md に呼び出し側の完全な例あり)
+#       リポジトリ固有の除外条件(特定ブランチ間の PR を除外するなど)は呼び出し側 job の
+#       `if:` へ足す。
+inputs:
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: false
+  anthropic_api_key:
+    description: 'Anthropic API key'
+    required: false
+
+outputs:
+  generated:
+    description: 'story.json が生成され artifact にアップロードされたか（true / false）'
+    value: ${{ steps.check.outputs.generated }}
+  pr_number:
+    description: '対象 PR の番号'
+    value: ${{ steps.pr.outputs.number }}
+  head_sha:
+    description: '対象 PR の head SHA'
+    value: ${{ steps.pr.outputs.sha }}
+
+runs:
+  using: 'composite'
+  steps:
+    # NOTE: pull_request / issue_comment のどちらでも PR 番号と HEAD SHA を解決する。
+    #       issue_comment のデフォルト checkout は default branch なので、gh pr view で
+    #       head sha を明示解決して checkout に渡す。
+    #       untrusted input を run: に直接展開せず env 経由で受ける（GitHub Actions injection 対策）
+    - name: Resolve PR
+      id: pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        EVENT_NAME: ${{ github.event_name }}
+        ISSUE_PR_URL: ${{ github.event.issue.pull_request.url }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        set -euo pipefail
+        if [ -z "$PR_NUMBER" ]; then
+          echo "PR number could not be resolved" >&2
+          exit 1
+        fi
+        if [ "$EVENT_NAME" = "issue_comment" ]; then
+          if [ -z "$ISSUE_PR_URL" ]; then
+            echo "This issue_comment is not on a pull request" >&2
+            exit 1
+          fi
+          sha=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
+        else
+          sha="$PR_HEAD_SHA"
+        fi
+        if [ -z "$sha" ]; then
+          echo "Failed to resolve head SHA of PR #${PR_NUMBER}" >&2
+          exit 1
+        fi
+        {
+          echo "number=${PR_NUMBER}"
+          echo "sha=${sha}"
+        } >> "$GITHUB_OUTPUT"
+
+    # fork からの PR では secrets が渡らないため、後続を静かに skip するためのゲート。
+    # NOTE: 認証情報が無いときに fail-fast にせず silent skip にしているのは、fork PR で必ず
+    #       赤くなるのを避けるため(fork では secrets が渡らないのが正常であり、設定漏れではない)。
+    # NOTE: checkout より前に置き、認証情報が無いときは checkout も行わない。
+    - name: Check credentials
+      id: auth
+      shell: bash
+      env:
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+      run: |
+        set -euo pipefail
+        if [[ -n "$CLAUDE_CODE_OAUTH_TOKEN" || -n "$ANTHROPIC_API_KEY" ]]; then
+          echo "has_credentials=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has_credentials=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # NOTE: Claude が周辺コードを Grep / Read するために PR head をチェックアウトする。
+    #       pull_request の既定チェックアウトは merge ref なので、ref に head SHA を明示する。
+    #       issue_comment はシークレットのある信頼コンテキストで動くため、トークンを
+    #       .git/config に残さない(persist-credentials: false)。
+    - name: Check out PR head
+      if: ${{ steps.auth.outputs.has_credentials == 'true' }}
+      uses: actions/checkout@v7
+      with:
+        token: ${{ github.token }}
+        persist-credentials: false
+        ref: ${{ steps.pr.outputs.sha }}
+
+    # NOTE: --scope user は必須(理由はファイル冒頭の NOTE を参照)。
+    # NOTE: pin SHA は publish/action.yml の同じ pin と必ず同期すること。Dependabot の管理外
+    #       (gh skill install --pin を見ない)なので手動で更新する。更新時は SKILL.md の
+    #       allowed-tools と後続ステップの --allowedTools が一致しているかを必ず確認する
+    #       (列挙漏れは headless では「プロンプトされず拒否」になり、generated=false に直結する)。
+    # NOTE: continue-on-error は付けない。スキルが入らなければ後続は必ず無意味なので、
+    #       ここは落ちて気付くべき箇所。
+    - name: Install pr-story skill
+      id: install
+      if: ${{ steps.auth.outputs.has_credentials == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        # gh skill は preview 機能(gh >= 2.92 が必要)なのでバージョンをログに残す。
+        gh --version
+        gh skill install aki77/skills github/pr-story --agent claude-code --scope user --pin 433c566b9b2df83ae1079a673fb1f3855fa0c491 --force
+        script="$HOME/.claude/skills/pr-story/scripts/pr-story.mjs"
+        test -f "$script"
+        # NOTE: 展開済みの絶対パスを output に出すのは、Bash(...) の許可がリテラルの前置一致であり、
+        #       モデルが ~/ ではなく /home/runner/... を発行しうるため。両形式を --allowedTools に
+        #       登録するのに使う。
+        echo "script=${script}" >> "$GITHUB_OUTPUT"
+        # NOTE: スクリプトの作業ディレクトリは os.tmpdir()/pr-story/<owner>-<repo>-<N> になる。
+        #       /tmp を決め打ちにせず、node が実際に使う値を --add-dir と成果物チェックの両方で使う。
+        echo "tmpdir=$(node -p 'require("os").tmpdir()')" >> "$GITHUB_OUTPUT"
+
+    # NOTE: diff が前回から変わっていなければ(check が fresh)、Claude を起動せずに終える。
+    #       /story コメント経路は明示的な再生成依頼なので fresh でも常に実行する
+    #       (EVENT_NAME が pull_request のときだけ skip する分岐)。
+    # NOTE: check が失敗(非 0 終了)したら job を落とす。gh の認証・権限エラーなどは
+    #       Claude を起動しても同じく失敗するため。
+    # NOTE: スクリプトの JSON 出力は $GITHUB_OUTPUT に書かず、jq で取り出した status の比較結果だけを書く。
+    - name: Check freshness
+      id: fresh
+      if: ${{ steps.auth.outputs.has_credentials == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        SCRIPT: ${{ steps.install.outputs.script }}
+      run: |
+        set -euo pipefail
+        result=$(node "$SCRIPT" check "$PR_NUMBER")
+        status=$(jq -r .status <<< "$result")
+        echo "check status: ${status}"
+        if [[ "$status" == "fresh" && "$EVENT_NAME" == "pull_request" ]]; then
+          echo "should_run=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    # NOTE: prompt は 1 行のプレーンスカラーにする。ブロックスカラー(|)だと末尾改行が付き、
+    #       説明文を足すと 2 行目以降も $ARGUMENTS に流れ込んで引数の解析が壊れる。
+    #       PR 番号の明示も必須(detached HEAD ではブランチから解決できない)。
+    #       check は前の step で済ませているので --refresh を付ける。
+    # NOTE: --dry-run で render まで行い、post はさせない(書き込みは publish action が担う)。
+    # NOTE: --model は渡さない(スキルの frontmatter が model を持つ)。frontmatter の
+    #       context: fork / model: sonnet があっても headless で動く想定だが、
+    #       generated=false が続いたら、まずここと --allowedTools の過不足を疑うこと。
+    # NOTE: id を付けていないのは意図的。この step の outputs / outcome は参照しない
+    #       (理由は後続の Check generated output の WARNING を参照)。
+    # NOTE: action は SHA ではなくタグ(@v1)で pin している(当リポジトリは Dependabot weekly で
+    #       タグを更新する方針)。ただし後述の github_token の挙動と claude_args の
+    #       トークン解析は v1.0.216 で確認したものなので、@v1 の指す先が動いて壊れた場合は
+    #       まずこの 2 点を疑うこと。
+    - name: Generate story (Claude)
+      if: ${{ steps.auth.outputs.has_credentials == 'true' && steps.fresh.outputs.should_run == 'true' }}
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      with:
+        prompt: /pr-story ${{ steps.pr.outputs.number }} --dry-run --refresh
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        # NOTE: `cond && '' || x` は '' が falsy のため常に x になる。OAuth トークンが空のときだけ API キーを渡す
+        anthropic_api_key: ${{ inputs.claude_code_oauth_token == '' && inputs.anthropic_api_key || '' }}
+        display_report: true
+        # WARNING: github_token の明示指定を外してはいけない。省略すると action は OIDC
+        #          トークンを Claude GitHub App の installation token に交換する経路に入り、
+        #          (1) id-token: write が無いので「Could not fetch an OIDC token. Did you
+        #          remember to add `id-token: write`」で失敗し、(2) エラーメッセージに従って
+        #          id-token: write を足すと、App token は contents/pull_requests/issues が
+        #          既定で write であり job の permissions を無視するため、呼び出し側 generate
+        #          ジョブの「読み取り専用」という前提(ファイル冒頭の permissions の注記)が
+        #          静かに崩れる。github_token を渡すと action 側は OVERRIDE_GITHUB_TOKEN として
+        #          早期 return し、交換を行わずこのジョブのスコープのまま動く。
+        github_token: ${{ github.token }}
+        # NOTE: --allowedTools はカンマ区切りの 1 文字列にせず、1 ルール 1 トークンで並べる
+        #       (claude_args は shell-quote で解釈され、allowedTools は続く非フラグ
+        #       トークンをすべて吸収する)。
+        # NOTE: --add-dir は --allowedTools より前に置く。後ろに置くとトークンとして吸収されて
+        #       しまう。cwd 外(os.tmpdir() 配下の作業ディレクトリ)への書き込みに必要。
+        # NOTE: スクリプトのパスをチルダ形式と展開済み絶対パスの 2 通り登録する理由は、
+        #       Install pr-story skill ステップの NOTE を参照。片方だけだとスクリプトの実行が
+        #       拒否され generated=false になる。SKILL.md の allowed-tools にある ./scripts と
+        #       .claude/skills の形式は、user スコープへのインストールでは使われないので
+        #       登録しない。
+        claude_args: |
+          --add-dir ${{ steps.install.outputs.tmpdir }}
+          --allowedTools Skill Read Write Grep Glob
+            'Bash(gh pr view:*)'
+            'Bash(gh issue view:*)'
+            'Bash(node ~/.claude/skills/pr-story/scripts/pr-story.mjs:*)'
+            'Bash(node ${{ steps.install.outputs.script }}:*)'
+
+    # WARNING: claude-code-action の exit code は成否の判定に使えない。Claude が指示を
+    #          達成できなくても exit 0 することがあり(逆に認証失敗などでは exit 1 する)、
+    #          いずれも continue-on-error に吸われる。そのため成果物の有無だけから判定する。
+    #          render は validate が通らないと comment.md を書かないので、空でない comment.md が
+    #          あれば validate と render が通ったとみなせる。
+    # NOTE: 生成できなかった場合は警告のみ出して exit 0(job は緑)。
+    # NOTE: if: を付けず、認証情報が無い場合や fresh でスキップした場合も含めて generated を
+    #       必ず true / false で出す。step が skip されると generated が空文字になり、呼び出し側の
+    #       判定(publish の if)が 3 値になるため。
+    - name: Check generated output
+      id: check
+      shell: bash
+      env:
+        HAS_CREDENTIALS: ${{ steps.auth.outputs.has_credentials }}
+        SHOULD_RUN: ${{ steps.fresh.outputs.should_run }}
+        TMPDIR_ROOT: ${{ steps.install.outputs.tmpdir }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+      run: |
+        set -euo pipefail
+        if [[ "$HAS_CREDENTIALS" != "true" || "$SHOULD_RUN" != "true" ]]; then
+          echo "generated=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        shopt -s nullglob
+        dirs=("$TMPDIR_ROOT"/pr-story/*-"$PR_NUMBER"/)
+        if [[ ${#dirs[@]} -ne 1 ]]; then
+          echo "generated=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::pr-story の作業ディレクトリがちょうど 1 つ見つかりませんでした(${#dirs[@]} 件)。コメントは投稿しません。"
+          exit 0
+        fi
+        dir="${dirs[0]%/}"
+        if [[ ! -s "$dir/comment.md" || ! -s "$dir/story.json" ]]; then
+          echo "generated=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::pr-story の comment.md または story.json が生成されませんでした。コメントは投稿しません。"
+          exit 0
+        fi
+        {
+          echo "generated=true"
+          echo "story_json=${dir}/story.json"
+        } >> "$GITHUB_OUTPUT"
+
+    # WARNING: artifact に story.json 以外を加えてはいけない。comment.md や prep.json を受け渡すと、
+    #          Claude が書いた任意の Markdown や投稿先が publish 側の検証を通らずに使われる。
+    # NOTE: artifact 名 pr-story-${{ github.run_id }} は publish/action.yml の Download story.json と
+    #       必ず一致させること。
+    # NOTE: overwrite: true は、同じ run の再実行(Re-run)で同名 artifact と衝突しないようにするため。
+    - name: Upload story.json
+      if: ${{ steps.check.outputs.generated == 'true' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: pr-story-${{ github.run_id }}
+        path: ${{ steps.check.outputs.story_json }}
+        overwrite: true
+        retention-days: 1
+        if-no-files-found: error
