@@ -131,6 +131,7 @@ jobs:
 
 - `claude_code_oauth_token` (どちらか必須): Claude Code OAuth トークン（推奨）
 - `anthropic_api_key` (どちらか必須): Anthropic API キー（`claude_code_oauth_token` がない場合のフォールバック）
+- `model` (任意): Claude のモデル（既定: `sonnet`）
 
 ### 出力パラメータ
 

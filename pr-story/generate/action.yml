@@ -42,6 +42,10 @@ inputs:
   anthropic_api_key:
     description: 'Anthropic API key'
     required: false
+  model:
+    description: 'Claude のモデル(エイリアスまたはモデル名)'
+    required: false
+    default: 'sonnet'
 
 outputs:
   generated:
@@ -192,9 +196,12 @@ runs:
     #       PR 番号の明示も必須(detached HEAD ではブランチから解決できない)。
     #       check は前の step で済ませているので --refresh を付ける。
     # NOTE: --dry-run で render まで行い、post はさせない(書き込みは publish action が担う)。
-    # NOTE: --model は渡さない(スキルの frontmatter が model を持つ)。frontmatter の
-    #       context: fork / model: sonnet があっても headless で動く想定だが、
-    #       generated=false が続いたら、まずここと --allowedTools の過不足を疑うこと。
+    # NOTE: --model を明示する(既定は sonnet。story.json の生成には sonnet で十分)。
+    #       スキル frontmatter の model: sonnet は context: fork の子にしか効かず、/pr-story を
+    #       受ける親セッションは既定モデルで動く。また headless で frontmatter の model が
+    #       効かない場合の保険としても、ここで揃える。空文字で --model が後続トークンを
+    #       吸収しないよう `|| 'sonnet'` でフォールバックする。
+    #       generated=false が続いたら、まず --allowedTools の過不足を疑うこと。
     # NOTE: id を付けていないのは意図的。この step の outputs / outcome は参照しない
     #       (理由は後続の Check generated output の WARNING を参照)。
     # NOTE: action は SHA ではなくタグ(@v1)で pin している(当リポジトリは Dependabot weekly で
@@ -224,14 +231,16 @@ runs:
         # NOTE: --allowedTools はカンマ区切りの 1 文字列にせず、1 ルール 1 トークンで並べる
         #       (claude_args は shell-quote で解釈され、allowedTools は続く非フラグ
         #       トークンをすべて吸収する)。
-        # NOTE: --add-dir は --allowedTools より前に置く。後ろに置くとトークンとして吸収されて
-        #       しまう。cwd 外(os.tmpdir() 配下の作業ディレクトリ)への書き込みに必要。
+        # NOTE: --model と --add-dir は --allowedTools より前に置く。後ろに置くとトークンとして
+        #       吸収されてしまう。--add-dir は cwd 外(os.tmpdir() 配下の作業ディレクトリ)への
+        #       書き込みに必要。
         # NOTE: スクリプトのパスをチルダ形式と展開済み絶対パスの 2 通り登録する理由は、
         #       Install pr-story skill ステップの NOTE を参照。片方だけだとスクリプトの実行が
         #       拒否され generated=false になる。SKILL.md の allowed-tools にある ./scripts と
         #       .claude/skills の形式は、user スコープへのインストールでは使われないので
         #       登録しない。
         claude_args: |
+          --model ${{ inputs.model || 'sonnet' }}
           --add-dir ${{ steps.install.outputs.tmpdir }}
           --allowedTools Skill Read Write Grep Glob
             'Bash(gh pr view:*)'
