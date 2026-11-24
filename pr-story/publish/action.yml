@@ -48,7 +48,7 @@ runs:
       run: |
         set -euo pipefail
         gh --version
-        gh skill install aki77/skills github/pr-story --agent claude-code --scope user --pin 433c566b9b2df83ae1079a673fb1f3855fa0c491 --force
+        gh skill install aki77/skills github/pr-story --agent claude-code --scope user --pin 7fb5a93f347bf780459b2cf68ac00369ce3cb422 --force
         script="$HOME/.claude/skills/pr-story/scripts/pr-story.mjs"
         test -f "$script"
         echo "script=${script}" >> "$GITHUB_OUTPUT"
