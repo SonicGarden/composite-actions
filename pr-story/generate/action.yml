@@ -146,7 +146,7 @@ runs:
         set -euo pipefail
         # gh skill は preview 機能(gh >= 2.92 が必要)なのでバージョンをログに残す。
         gh --version
-        gh skill install aki77/skills github/pr-story --agent claude-code --scope user --pin 433c566b9b2df83ae1079a673fb1f3855fa0c491 --force
+        gh skill install aki77/skills github/pr-story --agent claude-code --scope user --pin 7fb5a93f347bf780459b2cf68ac00369ce3cb422 --force
         script="$HOME/.claude/skills/pr-story/scripts/pr-story.mjs"
         test -f "$script"
         # NOTE: 展開済みの絶対パスを output に出すのは、Bash(...) の許可がリテラルの前置一致であり、
